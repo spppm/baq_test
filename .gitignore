@@ -1,0 +1,13 @@
+.venv/
+__pycache__
+
+
+# macOS
+**/.DS_Store
+
+# Cursor
+.cursorrules
+.cursor/
+
+# VSCode
+.vscode
