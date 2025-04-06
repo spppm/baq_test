@@ -14,4 +14,11 @@ __pycache__
 
 .secrets
 .env
+
+# Data
 data/
+
+# Artifacts
+artifacts/
+mlruns/
+mlartifacts/
