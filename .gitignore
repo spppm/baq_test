@@ -1,6 +1,6 @@
 .venv/
 __pycache__
-
+.ruff_cache/
 
 # macOS
 **/.DS_Store
@@ -14,6 +14,9 @@ __pycache__
 
 .secrets
 .env
+
+# Experiment
+notebooks/
 
 # Data
 data/
