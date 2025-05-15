@@ -1,111 +1,46 @@
+# Global Configuration
+experiment_tracking_status: false
+
 # Data Configuration
 data:
-  dataset: "iris"
-  data_path: "data/raw_data/Iris.csv"
-  features:
-    - SepalLengthCm # Float
-    - SepalWidthCm # Float
-    - PetalLengthCm # Float
-    - PetalWidthCm # Float
-  target: "Species" # String
-  split:
-    train_size: 0.8
-    test_size: 0.2
-    random_state: 42
-    stratify: true
-
-# Processing Configuration
-processing:
-  data_path: "data/processed_data/Iris.csv"
-  scaling:
-    method: "standard"  # Options: standard, minmax, robust
-    with_mean: true
-    with_std: true
-  missing_values: "mean"  # Options: mean, median, most_frequent
-  feature_engineering:
-    polynomial_features:
-      enable: false
-      degree: 2
-    pca:
-      enable: false
-      n_components: 2
+  raw_data_path: "/home/chogerlate/Documents/github/cpe393/baq/data/raw_data/processed_data_2025_05_12.csv"
 
 # Model Configuration
 model:
-  type: "random_forest"  # Options: random_forest, svm, logistic_regression
-  hyperparameters:
-    random_forest:
-      n_estimators: 100
-      max_depth: 10
-      min_samples_split: 2
-      min_samples_leaf: 1
-      bootstrap: true
-    svm:
-      C: 1.0
-      kernel: "rbf"
-      gamma: "scale"
-    logistic_regression:
-      C: 1.0
-      penalty: "l2"
-      solver: "lbfgs"
-      max_iter: 100
-      multi_class: "auto"
-
-# Training Configuration
-training:
-  cross_validation:
-    enable: true
-    n_splits: 5
-    shuffle: true
-  metrics:
-    - accuracy
-    - precision
-    - recall
-    - f1
-  early_stopping:
-    enable: false
-    patience: 5
-    min_delta: 0.001
-
-# MLOps Configuration
-mlops:
-  experiment_tracking:
-    tool: "mlflow"
-    tracking_uri: "http://localhost:5000"
-  model_registry:
-    enable: true
-    registry_uri: "sqlite:///mlflow.db"
-  hyperparameter_tuning:
-    enable: false
-    method: "grid"  # Options: grid, random, bayesian
-    n_trials: 10
-    cv: 3
+  model_type: "xgboost"
+  model_params:
+    n_estimators: 100
+    max_depth: 10
+    random_state: 42
 
 # Artifacts Configuration
 artifacts:
-  base_path: "artifacts"
+  base_path: "./artifacts"
   model:
     path: "models"
-    filename: "iris_model.pkl"
-  scaler:
-    path: "scalers"
-    filename: "scaler.pkl"
+    filename: "best_model.pkl"
+  processors:
+    path: "processors"
+    filename: "processor.joblib"
   metrics:
     path: "metrics"
     filename: "metrics.json"
   plots:
     path: "plots"
-    confusion_matrix: "confusion_matrix.png"
-    roc_curve: "roc_curve.png"
-    feature_importance: "feature_importance.png"
-    precision_recall_curve: "precision_recall_curve.png"
   reports:
     path: "reports"
-    classification_report: "classification_report.json"
-    model_card: "model_card.md"
-  versioning:
-    enable: true
-    naming_pattern: "{model_type}_{timestamp}"
-    keep_previous: 5
+    filename: "monitoring_report.html"
+# Training Configuration
+training:
+  forecast_horizon: 24
+  target_column: "pm2_5"
 
+  n_splits: 5
+  test_size: 0.2
+  random_state: 42
 
+wandb:
+  project: "pm25-forecasting"
+  entity: null  # Set your wandb username/team
+  tags: ["pm2.5", "forecasting", "air-quality"]
+  log_model: true
