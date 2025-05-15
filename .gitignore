@@ -25,3 +25,4 @@ data/
 artifacts/
 mlruns/
 mlartifacts/
+outputs/
