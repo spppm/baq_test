@@ -127,20 +127,22 @@ def data_preprocessing(datapath = 'data/raw_data/baq_dataset.csv'):
     target_col = 'pm2_5_(μg/m³)'
 
     df = normalize_data(df, feature_cols, target_col)
-    X = create_sequences(df, target_col, sequence_length)
-    np.save('data/x.npy', X)
-    return X
+    # X = create_sequences(df, target_col, sequence_length)
+    # np.save('data/x.npy', X)
+    df.to_csv('data/processed_data/data.csv', index=False)
+    return df
 
 def predict(model, input_data):
     y_pred = model.predict(input_data)
+    return y_pred
 
-def rolling_forecast(data, target_col, sequence_length, forecast_horizon):
+def rolling_forecast(model, data, target_col, sequence_length, forecast_horizon):
     rolling_data = data.copy()
     rolling_forecast_df = pd.DataFrame(columns=['time', 'predicted_value'])
 
     for _ in range(forecast_horizon):
         input_sequence = create_sequences(rolling_data.tail(sequence_length), target_col, sequence_length)
-        predicted_value = predict(lstm_model, input_sequence)
+        predicted_value = predict(model, input_sequence)
 
         new_row = rolling_data.tail(1)
         new_timestamp = pd.to_datetime(new_row.index[0]) + pd.Timedelta(hours=1)
@@ -157,12 +159,20 @@ def rolling_forecast(data, target_col, sequence_length, forecast_horizon):
 
 
 if __name__ == "__main__":
-    #data_preprocessing('data/raw_data/baq_dataset.csv')
-    X = np.load('data/x.npy')
+    # data_preprocessing('data/raw_data/baq_dataset.csv')
 
+
+    ## Uncomment the following lines to run 1-time prediction
+    # df = pd.read_csv('data/processed_data/data.csv')
+    # X = create_sequences(df, target_column='pm2_5_(μg/m³)', sequence_length=24   )
+    # lstm_model = load_model('src/baq/libs/models/lstm_model_3.h5', compile=False)
+    # y_pred = lstm_model.predict(X)
+    # y_pred = y_pred.reshape(-1, 1)
+    # print(y_pred)
+
+
+    # Uncomment the following lines to run rolling forecast
+    df = pd.read_csv('data/processed_data/data.csv')
     lstm_model = load_model('src/baq/libs/models/lstm_model_3.h5', compile=False)
-    y_pred = lstm_model.predict(X)
-    y_pred = y_pred.reshape(-1, 1)
-    print(y_pred)
-
+    print(rolling_forecast(lstm_model, df, target_col='pm2_5_(μg/m³)', sequence_length=24, forecast_horizon=48))
 
