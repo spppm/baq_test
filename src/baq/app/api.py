@@ -16,7 +16,8 @@ async def predict():
 
     # Preprocess data
     try:
-        data = data_preprocessing('data/raw_data/baq_dataset.csv')
+        #data = data_preprocessing('data/raw_data/baq_dataset.csv')
+        data  = np.load('data/x.npy')
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error loading or preprocessing data: {e}")
     

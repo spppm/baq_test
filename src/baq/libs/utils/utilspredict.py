@@ -131,6 +131,30 @@ def data_preprocessing(datapath = 'data/raw_data/baq_dataset.csv'):
     np.save('data/x.npy', X)
     return X
 
+def predict(model, input_data):
+    y_pred = model.predict(input_data)
+
+def rolling_forecast(data, target_col, sequence_length, forecast_horizon):
+    rolling_data = data.copy()
+    rolling_forecast_df = pd.DataFrame(columns=['time', 'predicted_value'])
+
+    for _ in range(forecast_horizon):
+        input_sequence = create_sequences(rolling_data.tail(sequence_length), target_col, sequence_length)
+        predicted_value = predict(lstm_model, input_sequence)
+
+        new_row = rolling_data.tail(1)
+        new_timestamp = pd.to_datetime(new_row.index[0]) + pd.Timedelta(hours=1)
+        new_row.index = pd.DatetimeIndex([new_timestamp])
+
+        rolling_data = pd.concat([rolling_data, new_row], ignore_index=True)
+
+        rolling_forecast_df = pd.concat(
+            [rolling_forecast_df, pd.DataFrame([[pd.to_datetime(rolling_data.tail(1).index), predicted_value]], columns=['time', 'predicted_value'])],
+            ignore_index=True
+        )
+
+    return rolling_forecast_df
+
 
 if __name__ == "__main__":
     #data_preprocessing('data/raw_data/baq_dataset.csv')
