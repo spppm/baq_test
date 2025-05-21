@@ -1,5 +1,5 @@
 [project]
-name = "bangkok-air-quality-forecasting-and-monitoring"
+name = "baq"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
