@@ -3,11 +3,11 @@ experiment_tracking_status: false
 
 # Data Configuration
 data:
-  raw_data_path: "/home/chogerlate/Documents/github/cpe393/baq/data/raw_data/processed_data_2025_05_12.csv"
+  raw_data_path: "../../../data/raw_data/processed_data_2025_05_12.csv"
 
 # Model Configuration
 model:
-  model_type: "xgboost"
+  model_type: "lstm"
   model_params:
     n_estimators: 100
     max_depth: 10

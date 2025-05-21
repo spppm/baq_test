@@ -121,10 +121,11 @@ def training_pipeline(config: DictConfig) -> None:
     )
     
     model_type = config["model"]["model_type"]
-    logger.info("\n========== Training completed ==========")
+    print("\n========== Training completed ==========")
     logger.info(f"Best model: {model_type.upper()}")
     logger.info(f"Metrics: {avg_metrics}")
     logger.info(f"Artifacts saved to {artifact_path}")
+    print("========================================\n")
 
     # Section: Logging
     if config["experiment_tracking_status"]:

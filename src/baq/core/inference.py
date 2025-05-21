@@ -1,25 +1,28 @@
-
+import numpy as np
 import pandas as pd
+from tensorflow.keras.models import Model as KerasModel
 
 def single_step_forecasting(
     model: object,
     X_test: pd.DataFrame,
 ) -> pd.Series:
     """
-    Generate predictions for a single step forecasting model.
+    Generate single-step forecasts.
     
-    This function makes predictions using a trained model on test data
-    for a single time step ahead forecasting task.
-    
-    Args:
-        model: Trained model object with a predict method
-        X_test: Test features dataframe
-        
-    Returns:
-        pd.Series: Series containing the predicted values
+    If `model` is a tf.keras.Model (e.g. your LSTM), we reshape to 3D;
+    otherwise (sklearn/XGB), we predict directly on the 2D DataFrame.
     """
-    predictions = model.predict(X_test)
-    return pd.Series(predictions, index=X_test.index)
+    # Keras LSTM needs 3D: (samples, timesteps, features)
+    if isinstance(model, KerasModel):
+        # to_numpy + cast to float32, then add timestep dim
+        X_np = X_test.to_numpy(dtype=np.float32).reshape(
+            (len(X_test), 1, X_test.shape[1])
+        )
+        preds = model.predict(X_np).reshape(-1)
+    else:
+        preds = model.predict(X_test)
+
+    return pd.Series(preds, index=X_test.index)
 
 def multi_step_forecasting(
     model: object,
@@ -27,40 +30,33 @@ def multi_step_forecasting(
     forecast_horizon: int,
 ) -> pd.Series:
     """
-    Generate predictions for a multi-step forecasting model.
-    
-    This function iteratively predicts multiple steps ahead by using each prediction
-    as an input for the next step prediction. It updates the feature matrix after
-    each prediction to simulate real forecasting conditions.
-    
-    Args:
-        model: Trained model object
-        X_test: Test features
-        forecast_horizon: Number of time steps to forecast ahead
-        
-    Returns:
-        pd.Series: Series containing multi-step predictions
+    Generate multi-step forecasts by iteratively predicting one step ahead,
+    updating lag features, and reshaping for LSTM where needed.
     """
-    # Make a copy of the test data to avoid modifying the original
     X_forecast = X_test.copy()
-    
-    # Initialize predictions array
     predictions = []
-    
-    # Iteratively predict each step
+
     for step in range(forecast_horizon):
-        # Generate prediction for current step
-        step_pred = model.predict(X_forecast.iloc[[step]])
-        predictions.append(step_pred[0])
-        
-        # If not the last step, update features for next prediction
+        # Prepare one-row input
+        X_row = X_forecast.iloc[[step]]
+
+        if isinstance(model, KerasModel):
+            # LSTM: to_numpy + float32 + reshape to (1, 1, n_features)
+            X_np = X_row.to_numpy(dtype=np.float32).reshape(1, 1, X_row.shape[1])
+            pred = model.predict(X_np)[0, 0]
+        else:
+            # sklearn or XGB
+            pred = model.predict(X_row)[0]
+
+        predictions.append(pred)
+
+        # Update lag features for next step
         if step < forecast_horizon - 1:
-            # Update lag features if they exist in the dataset
-            for lag_col in [col for col in X_forecast.columns if col.endswith(f'_lag_{step+1}')]:
-                target_col = lag_col.split('_lag_')[0]
-                # Find the next lag column to update
-                next_lag_col = f"{target_col}_lag_{step+2}"
-                if next_lag_col in X_forecast.columns:
-                    X_forecast.loc[X_forecast.index[step+1], next_lag_col] = step_pred[0]
-    
+            for col in X_forecast.columns:
+                if col.endswith(f"_lag_{step+1}"):
+                    base = col.rsplit("_lag_", 1)[0]
+                    next_col = f"{base}_lag_{step+2}"
+                    if next_col in X_forecast.columns:
+                        X_forecast.iat[step+1, X_forecast.columns.get_loc(next_col)] = pred
+
     return pd.Series(predictions, index=X_test.index[:forecast_horizon])
