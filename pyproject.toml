@@ -16,6 +16,8 @@ dependencies = [
     "pandas>=2.2.3",
     "scikit-learn>=1.6.1",
     "seaborn>=0.13.2",
+    "keras>=3.9.2",
+    "fastapi[standard]>=0.115.12",
 ]
 
 [build-system]
