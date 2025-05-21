@@ -1,7 +1,19 @@
+from cProfile import label
+from pyexpat import model
 import joblib
+from matplotlib import scale
 import numpy as np
 import pandas as pd
 from keras.models import load_model
+from semver import process
+
+feature_scaler_source = 'src/baq/libs/utils/feature_scaler.pkl'
+target_scaler_source = 'src/baq/libs/utils/target_scaler.pkl'
+label_encoder_source = 'src/baq/libs/utils/label_encoder.pkl'
+model_source = 'src/baq/libs/models/lstm_model_3.h5'
+raw_data_source = 'data/raw_data/baq_dataset.csv'
+processed_data_source = 'data/processed_data/data.csv'
+seasonal_medians_source = 'data/raw_data/seasonal_medians.csv'
 
 
 def pm25_to_aqi_tier(pm25):
@@ -59,10 +71,10 @@ def clean_data(df):
     df = df.interpolate(method='linear')
 
     # Fill missing values
-    df = fill_missing_with_seasonal_median(df, 'data/raw_data/seasonal_medians.csv')
+    df = fill_missing_with_seasonal_median(df, seasonal_medians_source)
 
     # Encode weather code
-    le = joblib.load('src/baq/libs/utils/label_encoder.pkl')
+    le = joblib.load(label_encoder_source)
     df['weather_code_(wmo_code)'] = df['weather_code_(wmo_code)'].astype(str)
     df['weather_code_(wmo_code)'] = le.transform(df['weather_code_(wmo_code)'])
 
@@ -97,8 +109,8 @@ def feature_engineering(df):
     return df
 
 def normalize_data(df, feature_cols, target_col):
-    feature_scaler = joblib.load('src/baq/libs/utils/feature_scaler.pkl')
-    target_scaler = joblib.load('src/baq/libs/utils/target_scaler.pkl')
+    feature_scaler = joblib.load(feature_scaler_source)
+    target_scaler = joblib.load(target_scaler_source)
 
     df.loc[:, feature_cols] = feature_scaler.transform(df[feature_cols])
     df.loc[:, [target_col]] = target_scaler.transform(df[[target_col]])
@@ -114,13 +126,12 @@ def create_sequences(data, target_column, sequence_length):
 
     return np.array(X)
 
-def data_preprocessing(datapath = 'data/raw_data/baq_dataset.csv'):
+def data_preprocessing(datapath = raw_data_source):
     df = pd.read_csv(datapath)
     df = df.head(48)
     df = clean_data(df)
     df = feature_engineering(df)
 
-    sequence_length = 24
     feature_cols = [col for col in df.columns if col not in [
         'pm2_5_(μg/m³)', 'hour', 'dayofweek', 'month', 'is_weekend', 'is_night', 'sin_hour', 'cos_hour', 'weather_code_(wmo_code)', 'pm2_5_tier'
     ]]
@@ -129,12 +140,23 @@ def data_preprocessing(datapath = 'data/raw_data/baq_dataset.csv'):
     df = normalize_data(df, feature_cols, target_col)
     # X = create_sequences(df, target_col, sequence_length)
     # np.save('data/x.npy', X)
-    df.to_csv('data/processed_data/data.csv', index=False)
+    df.to_csv(processed_data_source, index=False)
     return df
 
 def predict(model, input_data):
     y_pred = model.predict(input_data)
     return y_pred
+
+def one_time_prediction(model, data, target_col, sequence_length):
+    input_sequence = create_sequences(data, target_col, sequence_length)
+    predicted_value = predict(model, input_sequence)
+    predicted_value = predicted_value.reshape(-1, 1)
+
+    # Inverse transform the predicted value
+    target_scaler = joblib.load(target_scaler_source)
+    predicted_value = target_scaler.inverse_transform(predicted_value)
+
+    return predicted_value
 
 def rolling_forecast(model, data, target_col, sequence_length, forecast_horizon):
     rolling_data = data.copy()
@@ -154,6 +176,11 @@ def rolling_forecast(model, data, target_col, sequence_length, forecast_horizon)
             [rolling_forecast_df, pd.DataFrame([[pd.to_datetime(rolling_data.tail(1).index), predicted_value]], columns=['time', 'predicted_value'])],
             ignore_index=True
         )
+    
+    #feature scaling
+    target_scaler = joblib.load(target_scaler_source)
+    rolling_forecast_df['predicted_value'] = target_scaler.inverse_transform(rolling_forecast_df['predicted_value'].values.reshape(-1, 1))
+  
 
     return rolling_forecast_df
 
@@ -163,16 +190,13 @@ if __name__ == "__main__":
 
 
     ## Uncomment the following lines to run 1-time prediction
-    # df = pd.read_csv('data/processed_data/data.csv')
-    # X = create_sequences(df, target_column='pm2_5_(μg/m³)', sequence_length=24   )
-    # lstm_model = load_model('src/baq/libs/models/lstm_model_3.h5', compile=False)
-    # y_pred = lstm_model.predict(X)
-    # y_pred = y_pred.reshape(-1, 1)
-    # print(y_pred)
+    df = pd.read_csv(processed_data_source)
+    lstm_model = load_model(model_source, compile=False)
+    print(one_time_prediction(lstm_model, df, target_col='pm2_5_(μg/m³)', sequence_length=24))
 
 
     # Uncomment the following lines to run rolling forecast
-    df = pd.read_csv('data/processed_data/data.csv')
-    lstm_model = load_model('src/baq/libs/models/lstm_model_3.h5', compile=False)
-    print(rolling_forecast(lstm_model, df, target_col='pm2_5_(μg/m³)', sequence_length=24, forecast_horizon=48))
+    # df = pd.read_csv(processed_data_source)
+    # lstm_model = load_model(model_source, compile=False)
+    # print(rolling_forecast(lstm_model, df, target_col='pm2_5_(μg/m³)', sequence_length=24, forecast_horizon=48))
 
