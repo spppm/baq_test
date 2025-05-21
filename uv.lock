@@ -547,7 +547,7 @@ wheels = [
 ]
 
 [[package]]
-name = "bangkok-air-quality-forecasting-and-monitoring"
+name = "baq"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

@@ -18,12 +18,10 @@ __pycache__
 # Experiment
 notebooks/
 
-# Data
-data/
 
 # Artifacts
 artifacts/
 mlruns/
 mlartifacts/
 outputs/
-/data
+/data/
