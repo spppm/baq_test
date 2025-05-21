@@ -1,16 +1,19 @@
 from fastapi import FastAPI, HTTPException
-from more_itertools import one
-from pydantic import BaseModel
 import numpy as np
 from keras.models import load_model
 import pandas as pd
-from baq.libs.utils.utilspredict import data_preprocessing, create_sequences, rolling_forecast, one_time_prediction
+
+from baq.libs.utils.utilspredict import rolling_forecast, one_time_prediction
 
 app = FastAPI()
 
 modelsrc = 'src/baq/libs/models/lstm_model_3.h5'
-datasrc = 'data/processed_data/data.csv'
-raw_data_source = 'data/raw_data/baq_dataset.csv'
+# datasrc = 'data/processed_data/data.csv'
+# raw_data_source = 'data/raw_data/baq_dataset.csv'
+
+# modelsrc = 's3://soccer-storage/webapp-storage/model/lstm_model_3.h5'
+datasrc = 's3://soccer-storage/webapp-storage/data/processed/data.csv'
+
 
 @app.get("/")
 def read_root():
