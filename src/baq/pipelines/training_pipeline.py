@@ -70,16 +70,19 @@ def training_pipeline(config: DictConfig) -> None:
     df = load_data(config["data"]["raw_data_path"])
     
     # Create features and preprocess data
-    X_train, y_train, X_test, y_test, processor = process_train_data(
-        data=df,
+    X_train, y_train, X_val, y_val, X_test, y_test, processor = process_train_data(
+        df,
         target_column=config["training"]["target_column"],
-        forecast_horizon=config["training"]["forecast_horizon"]
-    )    
+        train_ratio=0.7,
+        val_ratio=0.1,
+        test_ratio=0.2,
+    )
     
     # Train model
     model, avg_metrics = train_model(
-        X=X_train,
-        y=y_train,
+        X_train, y_train,
+        X_val,   y_val,
+        X_test,  y_test,
         model_name=config["model"]["model_type"],
         model_params=config["model"]["model_params"],
         training_config=config["training"]
@@ -90,7 +93,8 @@ def training_pipeline(config: DictConfig) -> None:
         model=model,
         X_test=X_test,
         y_test=y_test,
-        forecast_horizon=config["training"]["forecast_horizon"]
+        forecast_horizon=config["training"]["forecast_horizon"],
+        sequence_length=config["training"]["sequence_length"]
     )
     
 

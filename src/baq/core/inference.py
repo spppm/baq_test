@@ -1,62 +1,80 @@
 import numpy as np
 import pandas as pd
 from tensorflow.keras.models import Model as KerasModel
+from baq.data.utils import create_sequences
 
 def single_step_forecasting(
     model: object,
     X_test: pd.DataFrame,
+    sequence_length: int = 1
 ) -> pd.Series:
     """
     Generate single-step forecasts.
-    
-    If `model` is a tf.keras.Model (e.g. your LSTM), we reshape to 3D;
-    otherwise (sklearn/XGB), we predict directly on the 2D DataFrame.
+    - For LSTM: Use (samples, seq_len, features)
+    - For sklearn/XGB: Use DataFrame 2D
+
+    Args:
+      model: sklearn/XGB หรือ tf.keras.Model
+      X_test: DataFrame shape=(T, F)
+      sequence_length: length of sliding window (LSTM)
+    Returns:
+      Series of predictions, index offset to sequence_length  
     """
-    # Keras LSTM needs 3D: (samples, timesteps, features)
     if isinstance(model, KerasModel):
-        # to_numpy + cast to float32, then add timestep dim
-        X_np = X_test.to_numpy(dtype=np.float32).reshape(
-            (len(X_test), 1, X_test.shape[1])
-        )
-        preds = model.predict(X_np).reshape(-1)
+        # create sequence windows
+        X_seq, _ = create_sequences(X_test, pd.Series(np.zeros(len(X_test))), sequence_length)
+        # X_seq shape = (T-seq_len, seq_len, F)
+        preds = model.predict(X_seq).reshape(-1)
+        # index of y is X_test.index[sequence_length:]
+        idx = X_test.index[sequence_length:]
     else:
         preds = model.predict(X_test)
+        idx = X_test.index
 
-    return pd.Series(preds, index=X_test.index)
+    return pd.Series(preds, index=idx)
 
 def multi_step_forecasting(
     model: object,
     X_test: pd.DataFrame,
     forecast_horizon: int,
+    sequence_length: int = 1
 ) -> pd.Series:
     """
-    Generate multi-step forecasts by iteratively predicting one step ahead,
-    updating lag features, and reshaping for LSTM where needed.
+    Multi-step iterated forecasting.
+    สำหรับ LSTM ต้อง feed ลำดับย้อนหลัง `sequence_length` ทุกครั้ง
     """
-    X_forecast = X_test.copy()
-    predictions = []
+    # copy data to update lag‐features
+    X_fore = X_test.copy()
+    preds = []
+
+    # buffer for LSTM: keep last `sequence_length` rows
+    if isinstance(model, KerasModel):
+        seq_buffer = X_fore[:sequence_length].to_numpy(dtype=np.float32)
 
     for step in range(forecast_horizon):
-        # Prepare one-row input
-        X_row = X_forecast.iloc[[step]]
-
         if isinstance(model, KerasModel):
-            # LSTM: to_numpy + float32 + reshape to (1, 1, n_features)
-            X_np = X_row.to_numpy(dtype=np.float32).reshape(1, 1, X_row.shape[1])
-            pred = model.predict(X_np)[0, 0]
+            # LSTM: reshape (1, seq_len, F)
+            inp = seq_buffer.reshape(1, sequence_length, -1)
+            p = model.predict(inp)[0,0]
         else:
-            # sklearn or XGB
-            pred = model.predict(X_row)[0]
+            # sklearn/XGB: use a single row
+            row = X_fore.iloc[[step]]
+            p = model.predict(row)[0]
 
-        predictions.append(pred)
+        preds.append(p)
 
-        # Update lag features for next step
+        # Update lag‐features in X_fore
         if step < forecast_horizon - 1:
-            for col in X_forecast.columns:
+            for col in X_fore.columns:
                 if col.endswith(f"_lag_{step+1}"):
-                    base = col.rsplit("_lag_", 1)[0]
+                    base = col.rsplit("_lag_",1)[0]
                     next_col = f"{base}_lag_{step+2}"
-                    if next_col in X_forecast.columns:
-                        X_forecast.iat[step+1, X_forecast.columns.get_loc(next_col)] = pred
+                    if next_col in X_fore.columns:
+                        X_fore.iat[step+1, X_fore.columns.get_loc(next_col)] = p
 
-    return pd.Series(predictions, index=X_test.index[:forecast_horizon])
+        # if LSTM, shift buffer and append new value
+        if isinstance(model, KerasModel):
+            seq_buffer = np.vstack([seq_buffer[1:], X_fore.iloc[[step+1]].to_numpy(dtype=np.float32)])
+
+    # index of multi‐step is X_test.index[:forecast_horizon]
+    return pd.Series(preds, index=X_test.index[:forecast_horizon])

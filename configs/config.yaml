@@ -3,11 +3,11 @@ experiment_tracking_status: false
 
 # Data Configuration
 data:
-  raw_data_path: "../../../data/raw_data/processed_data_2025_05_12.csv"
+  raw_data_path: "../../../data/raw_data/baq_dataset.csv"
 
 # Model Configuration
 model:
-  model_type: "lstm"
+  model_type: "lstm"  # Options: "random_forest", "xgboost", "lstm"
   model_params:
     n_estimators: 100
     max_depth: 10
@@ -30,14 +30,19 @@ artifacts:
   reports:
     path: "reports"
     filename: "monitoring_report.html"
+
 # Training Configuration
 training:
   forecast_horizon: 24
-  target_column: "pm2_5"
-
+  target_column: "pm2_5_(μg/m³)"
+  sequence_length: 24
   n_splits: 5
   test_size: 0.2
   random_state: 42
+  epochs: 200
+  batch_size: 32
+  early_stopping_patience: 10
+  reduce_lr_patience: 5
 
 wandb:
   project: "pm25-forecasting"
