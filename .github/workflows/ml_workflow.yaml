@@ -77,38 +77,86 @@ jobs:
               else:
                   return f"{runtime_seconds/3600:.1f}h"
           
+          def get_metrics(run):
+              """Extract single-step and multi-step metrics from run summary"""
+              single_step = run.summary.get("single_step_metrics", {})
+              multi_step = run.summary.get("multi_step_metrics", {})
+              
+              return {
+                  "single_step_accuracy": single_step.get("accuracy"),
+                  "single_step_mape": single_step.get("mape"),
+                  "single_step_mae": single_step.get("mae"),
+                  "multi_step_accuracy": multi_step.get("accuracy"),
+                  "multi_step_mape": multi_step.get("mape"),
+                  "multi_step_mae": multi_step.get("mae")
+              }
+          
           def get_experiment_insights(run):
               """Generate experiment insights and comments for each model"""
-              accuracy = run.summary.get('accuracy') or run.summary.get('best_val_acc') or run.summary.get('val_accuracy')
-              loss = run.summary.get('loss') or run.summary.get('best_val_loss') or run.summary.get('val_loss')
-              train_acc = run.summary.get('train_accuracy')
-              val_acc = run.summary.get('val_accuracy')
+              metrics = get_metrics(run)
               runtime = run.summary.get('_runtime')
               
               insights = []
               
-              # Performance analysis
-              if accuracy:
-                  if accuracy >= 0.95:
-                      insights.append("🔥 **Excellent performance** - Model is performing exceptionally well")
-                  elif accuracy >= 0.90:
-                      insights.append("✨ **Strong performance** - Model shows great results")
-                  elif accuracy >= 0.80:
-                      insights.append("👍 **Good performance** - Solid baseline results")
-                  elif accuracy >= 0.70:
-                      insights.append("⚡ **Moderate performance** - Room for improvement")
+              # Performance analysis for single-step accuracy
+              single_acc = metrics["single_step_accuracy"]
+              if single_acc is not None:
+                  if single_acc >= 0.95:
+                      insights.append("🔥 **Excellent single-step performance** - Model predicts next step exceptionally well")
+                  elif single_acc >= 0.90:
+                      insights.append("✨ **Strong single-step performance** - Great next-step prediction accuracy")
+                  elif single_acc >= 0.80:
+                      insights.append("👍 **Good single-step performance** - Solid baseline for next-step prediction")
+                  elif single_acc >= 0.70:
+                      insights.append("⚡ **Moderate single-step performance** - Room for improvement in next-step prediction")
                   else:
-                      insights.append("⚠️ **Low performance** - Consider hyperparameter tuning or model architecture changes")
+                      insights.append("⚠️ **Low single-step performance** - Consider model architecture changes for better next-step prediction")
               
-              # Overfitting analysis
-              if train_acc and val_acc:
-                  gap = abs(train_acc - val_acc)
-                  if gap > 0.1:
-                      insights.append(f"🚨 **Potential overfitting detected** - Training accuracy ({train_acc:.3f}) significantly higher than validation ({val_acc:.3f})")
-                  elif gap > 0.05:
-                      insights.append(f"⚠️ **Slight overfitting** - Small gap between training ({train_acc:.3f}) and validation ({val_acc:.3f}) accuracy")
+              # Performance analysis for multi-step accuracy
+              multi_acc = metrics["multi_step_accuracy"]
+              if multi_acc is not None:
+                  if multi_acc >= 0.90:
+                      insights.append("🎯 **Excellent multi-step performance** - Model maintains accuracy over longer sequences")
+                  elif multi_acc >= 0.80:
+                      insights.append("🌟 **Strong multi-step performance** - Good sequence prediction capability")
+                  elif multi_acc >= 0.70:
+                      insights.append("📈 **Moderate multi-step performance** - Decent long-term prediction accuracy")
                   else:
-                      insights.append(f"✅ **Well-generalized model** - Training and validation accuracy are well-balanced")
+                      insights.append("📉 **Low multi-step performance** - Consider improving long-term prediction capability")
+              
+              # Compare single-step vs multi-step performance
+              if single_acc is not None and multi_acc is not None:
+                  gap = single_acc - multi_acc
+                  if gap > 0.2:
+                      insights.append(f"⚠️ **Significant performance degradation** - Large drop from single-step ({single_acc:.3f}) to multi-step ({multi_acc:.3f})")
+                  elif gap > 0.1:
+                      insights.append(f"📊 **Moderate performance drop** - Some degradation from single-step to multi-step prediction")
+                  elif gap < 0.05:
+                      insights.append(f"✅ **Consistent performance** - Model maintains accuracy across prediction horizons")
+              
+              # Error analysis (MAPE and MAE)
+              single_mape = metrics["single_step_mape"]
+              multi_mape = metrics["multi_step_mape"]
+              
+              if single_mape is not None:
+                  if single_mape < 5:
+                      insights.append(f"🎯 **Low single-step error** - MAPE: {single_mape:.2f}% (excellent)")
+                  elif single_mape < 10:
+                      insights.append(f"👍 **Good single-step error** - MAPE: {single_mape:.2f}% (acceptable)")
+                  elif single_mape < 20:
+                      insights.append(f"⚠️ **Moderate single-step error** - MAPE: {single_mape:.2f}% (needs improvement)")
+                  else:
+                      insights.append(f"🚨 **High single-step error** - MAPE: {single_mape:.2f}% (significant issues)")
+              
+              if multi_mape is not None:
+                  if multi_mape < 10:
+                      insights.append(f"🎯 **Low multi-step error** - MAPE: {multi_mape:.2f}% (excellent)")
+                  elif multi_mape < 20:
+                      insights.append(f"👍 **Good multi-step error** - MAPE: {multi_mape:.2f}% (acceptable)")
+                  elif multi_mape < 30:
+                      insights.append(f"⚠️ **Moderate multi-step error** - MAPE: {multi_mape:.2f}% (needs improvement)")
+                  else:
+                      insights.append(f"🚨 **High multi-step error** - MAPE: {multi_mape:.2f}% (significant issues)")
               
               # Runtime analysis
               if runtime:
@@ -121,25 +169,23 @@ jobs:
               
               # Model-specific insights based on name
               model_name = run.name.lower()
-              if 'lstm' in model_name or 'rnn' in model_name:
-                  insights.append("🔄 **Sequential model** - Good for time-series or sequence data")
-              elif 'cnn' in model_name or 'conv' in model_name:
-                  insights.append("🖼️ **Convolutional model** - Optimized for image/spatial data")
-              elif 'transformer' in model_name or 'bert' in model_name:
-                  insights.append("🤖 **Transformer architecture** - State-of-the-art for NLP tasks")
-              elif 'xgboost' in model_name:
-                  insights.append("🌳 **Gradient boosting** - Excellent for tabular data")
-              elif 'random' in model_name and 'forest' in model_name:
-                  insights.append("🌲 **Ensemble method** - Robust and interpretable")
-              elif 'svm' in model_name:
-                  insights.append("📐 **Support Vector Machine** - Good for high-dimensional data")
+              if 'lstm' in model_name or 'rnn' in model_name or 'gru' in model_name:
+                  insights.append("🔄 **Sequential model** - Good for time-series prediction tasks")
+              elif 'transformer' in model_name or 'attention' in model_name:
+                  insights.append("🤖 **Attention-based model** - Advanced architecture for sequence modeling")
+              elif 'arima' in model_name:
+                  insights.append("📊 **Traditional time-series model** - Statistical approach to forecasting")
+              elif 'xgboost' in model_name or 'lightgbm' in model_name:
+                  insights.append("🌳 **Gradient boosting** - Tree-based ensemble method")
+              elif 'linear' in model_name:
+                  insights.append("📈 **Linear model** - Simple baseline for comparison")
               
               return insights
           
           def generate_report():
               """Generate the WandB runs report"""
               with open("wandb_summary.md", "w") as f:
-                  f.write(f"# 🤖 ML Experiment Dashboard\n")
+                  f.write(f"# 🔮 Time Series Prediction Dashboard\n")
                   f.write(f"**Total Recent Runs:** {len(runs)} | **Time Range:** Last 7 days\n\n")
                   
                   if not runs:
@@ -148,52 +194,60 @@ jobs:
                       return
                   
                   # Performance summary
-                  best_accuracy = 0
-                  best_model = None
-                  best_run_id = None
+                  best_single_accuracy = 0
+                  best_multi_accuracy = 0
+                  best_single_model = None
+                  best_multi_model = None
+                  best_single_run_id = None
+                  best_multi_run_id = None
                   total_runtime = 0
                   finished_runs = [r for r in runs if r.state == "finished"]
                   
                   for run in finished_runs:
-                      accuracy = run.summary.get('accuracy') or run.summary.get('best_val_acc') or run.summary.get('val_accuracy')
+                      metrics = get_metrics(run)
                       runtime = run.summary.get('_runtime')
                       
-                      if accuracy and accuracy > best_accuracy:
-                          best_accuracy = accuracy
-                          best_model = run.name
-                          best_run_id = run.id
+                      if metrics["single_step_accuracy"] and metrics["single_step_accuracy"] > best_single_accuracy:
+                          best_single_accuracy = metrics["single_step_accuracy"]
+                          best_single_model = run.name
+                          best_single_run_id = run.id
+                      
+                      if metrics["multi_step_accuracy"] and metrics["multi_step_accuracy"] > best_multi_accuracy:
+                          best_multi_accuracy = metrics["multi_step_accuracy"]
+                          best_multi_model = run.name
+                          best_multi_run_id = run.id
                       
                       if runtime:
                           total_runtime += runtime
                   
                   # Quick stats
                   f.write("## 📊 Quick Stats\n\n")
-                  if best_model and best_accuracy > 0:
-                      f.write(f"🏆 **Champion Model:** [{best_model}](https://wandb.ai/{entity}/{project}/runs/{best_run_id}) ({best_accuracy:.3f} accuracy)\n")
+                  if best_single_model and best_single_accuracy > 0:
+                      f.write(f"🥇 **Best Single-Step Model:** [{best_single_model}](https://wandb.ai/{entity}/{project}/runs/{best_single_run_id}) ({best_single_accuracy:.3f} accuracy)\n")
+                  if best_multi_model and best_multi_accuracy > 0:
+                      f.write(f"🎯 **Best Multi-Step Model:** [{best_multi_model}](https://wandb.ai/{entity}/{project}/runs/{best_multi_run_id}) ({best_multi_accuracy:.3f} accuracy)\n")
                   f.write(f"⏱️ **Total Training Time:** {format_runtime(total_runtime)}\n")
                   f.write(f"✅ **Completed Runs:** {len(finished_runs)}/{len(runs)}\n")
                   f.write(f"🔄 **Active Runs:** {len([r for r in runs if r.state == 'running'])}\n\n")
                   
                   # Create performance comparison table
                   f.write("## 🏁 Model Performance Leaderboard\n\n")
-                  f.write("| Rank | Model | Run ID | Performance | Accuracy | Loss | Runtime | Status |\n")
-                  f.write("|------|-------|--------|-------------|----------|------|---------|--------|\n")
+                  f.write("| Rank | Model | Run ID | Single-Step Acc | Multi-Step Acc | Single MAPE | Multi MAPE | Runtime | Status |\n")
+                  f.write("|------|-------|--------|-----------------|----------------|-------------|------------|---------|--------|\n")
                   
-                  # Sort runs by accuracy for leaderboard
-                  sorted_runs = sorted(runs, key=lambda x: (
-                      x.summary.get('accuracy') or x.summary.get('best_val_acc') or x.summary.get('val_accuracy') or 0
-                  ), reverse=True)
+                  # Sort runs by single-step accuracy for leaderboard
+                  sorted_runs = sorted(runs, key=lambda x: get_metrics(x)["single_step_accuracy"] or 0, reverse=True)
                   
                   for idx, run in enumerate(sorted_runs, 1):
-                      # Get key metrics
-                      accuracy = run.summary.get('accuracy') or run.summary.get('best_val_acc') or run.summary.get('val_accuracy')
-                      loss = run.summary.get('loss') or run.summary.get('best_val_loss') or run.summary.get('val_loss')
+                      metrics = get_metrics(run)
                       runtime = run.summary.get('_runtime')
                       
                       # Format values
-                      perf_emoji = get_performance_emoji(accuracy)
-                      acc_str = f"{accuracy:.3f}" if accuracy is not None else "N/A"
-                      loss_str = f"{loss:.4f}" if loss is not None else "N/A"
+                      perf_emoji = get_performance_emoji(metrics["single_step_accuracy"])
+                      single_acc_str = f"{metrics['single_step_accuracy']:.3f}" if metrics["single_step_accuracy"] is not None else "N/A"
+                      multi_acc_str = f"{metrics['multi_step_accuracy']:.3f}" if metrics["multi_step_accuracy"] is not None else "N/A"
+                      single_mape_str = f"{metrics['single_step_mape']:.2f}%" if metrics["single_step_mape"] is not None else "N/A"
+                      multi_mape_str = f"{metrics['multi_step_mape']:.2f}%" if metrics["multi_step_mape"] is not None else "N/A"
                       runtime_str = format_runtime(runtime)
                       
                       # Status emoji
@@ -202,7 +256,7 @@ jobs:
                       # Rank emoji
                       rank_emoji = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else f"{idx}"
                       
-                      f.write(f"| {rank_emoji} | **{run.name}** | `{run.id[:8]}` | {perf_emoji} | {acc_str} | {loss_str} | {runtime_str} | {status_emoji} |\n")
+                      f.write(f"| {rank_emoji} | **{run.name}** | `{run.id[:8]}` | {single_acc_str} | {multi_acc_str} | {single_mape_str} | {multi_mape_str} | {runtime_str} | {status_emoji} |\n")
                   
                   f.write(f"\n📈 **Performance Legend:** 🏆 95%+ | 🥇 90%+ | 🥈 85%+ | 🥉 80%+ | 👍 70%+ | ⚠️ <70%\n\n")
                   
@@ -210,9 +264,9 @@ jobs:
                   f.write(f"## 🔬 Detailed Experiment Analysis\n\n")
                   
                   for idx, run in enumerate(sorted_runs, 1):
-                      accuracy = run.summary.get('accuracy') or run.summary.get('best_val_acc') or run.summary.get('val_accuracy')
+                      metrics = get_metrics(run)
                       
-                      f.write(f"### {get_performance_emoji(accuracy)} {run.name}\n")
+                      f.write(f"### {get_performance_emoji(metrics['single_step_accuracy'])} {run.name}\n")
                       f.write(f"**Run ID:** `{run.id}` | **Status:** {run.state} | **Created:** {run.created_at}\n\n")
                       
                       # Experiment insights
@@ -225,43 +279,45 @@ jobs:
                       
                       # Core metrics
                       f.write("**📊 Key Metrics:**\n")
-                      core_metrics = {
-                          "Final Accuracy": run.summary.get('accuracy') or run.summary.get('best_val_acc') or run.summary.get('val_accuracy'),
-                          "Final Loss": run.summary.get('loss') or run.summary.get('best_val_loss') or run.summary.get('val_loss'),
-                          "Training Accuracy": run.summary.get('train_accuracy'),
-                          "Validation Accuracy": run.summary.get('val_accuracy'),
-                          "Training Loss": run.summary.get('train_loss'),
-                          "Validation Loss": run.summary.get('val_loss'),
-                          "Test Accuracy": run.summary.get('test_accuracy'),
-                          "Test Loss": run.summary.get('test_loss'),
-                          "Training Time": run.summary.get('_runtime'),
-                          "Epochs": run.summary.get('epoch') or run.summary.get('epochs'),
-                          "Learning Rate": run.summary.get('learning_rate') or run.summary.get('lr'),
-                          "Batch Size": run.summary.get('batch_size')
-                      }
                       
-                      metrics_found = False
-                      for metric_name, value in core_metrics.items():
-                          if value is not None:
-                              metrics_found = True
-                              if metric_name == "Training Time":
-                                  f.write(f"- **{metric_name}:** {format_runtime(value)}\n")
-                              elif isinstance(value, float) and metric_name not in ["Epochs", "Batch Size"]:
-                                  f.write(f"- **{metric_name}:** {value:.4f}\n")
-                              else:
-                                  f.write(f"- **{metric_name}:** {value}\n")
+                      f.write("*Single-Step Prediction:*\n")
+                      if metrics["single_step_accuracy"] is not None:
+                          f.write(f"- **Accuracy:** {metrics['single_step_accuracy']:.4f}\n")
+                      if metrics["single_step_mape"] is not None:
+                          f.write(f"- **MAPE:** {metrics['single_step_mape']:.4f}%\n")
+                      if metrics["single_step_mae"] is not None:
+                          f.write(f"- **MAE:** {metrics['single_step_mae']:.4f}\n")
                       
-                      if not metrics_found:
+                      f.write("\n*Multi-Step Prediction:*\n")
+                      if metrics["multi_step_accuracy"] is not None:
+                          f.write(f"- **Accuracy:** {metrics['multi_step_accuracy']:.4f}\n")
+                      if metrics["multi_step_mape"] is not None:
+                          f.write(f"- **MAPE:** {metrics['multi_step_mape']:.4f}%\n")
+                      if metrics["multi_step_mae"] is not None:
+                          f.write(f"- **MAE:** {metrics['multi_step_mae']:.4f}\n")
+                      
+                      # Runtime
+                      runtime = run.summary.get('_runtime')
+                      if runtime:
+                          f.write(f"\n*Training Information:*\n")
+                          f.write(f"- **Training Time:** {format_runtime(runtime)}\n")
+                      
+                      # Check if no metrics were found
+                      if all(v is None for v in metrics.values()) and runtime is None:
                           f.write("- *No detailed metrics available*\n")
                       
                       # Configuration details
                       config = run.config
                       if config:
                           f.write(f"\n**⚙️ Configuration:**\n")
-                          important_configs = ['model_type', 'architecture', 'optimizer', 'learning_rate', 'batch_size', 'epochs', 'dropout', 'hidden_size']
+                          important_configs = ['model_type', 'architecture', 'optimizer', 'learning_rate', 'batch_size', 'epochs', 'sequence_length', 'prediction_horizon', 'hidden_size']
+                          config_found = False
                           for key in important_configs:
                               if key in config:
+                                  config_found = True
                                   f.write(f"- **{key.replace('_', ' ').title()}:** {config[key]}\n")
+                          if not config_found:
+                              f.write("- *No configuration details available*\n")
                       
                       # Quick actions
                       f.write(f"\n**🔗 Quick Actions:**\n")
@@ -270,26 +326,31 @@ jobs:
                       f.write(f"- [📋 View Logs](https://wandb.ai/{entity}/{project}/runs/{run.id}/logs)\n")
                       
                       # Recommendations
-                      if accuracy is not None:
+                      single_acc = metrics["single_step_accuracy"]
+                      multi_acc = metrics["multi_step_accuracy"]
+                      if single_acc is not None or multi_acc is not None:
                           f.write(f"\n**💡 Recommendations:**\n")
-                          if accuracy < 0.7:
-                              f.write("- Consider increasing model complexity or training time\n")
+                          if (single_acc and single_acc < 0.7) or (multi_acc and multi_acc < 0.7):
+                              f.write("- Consider increasing model complexity or sequence length\n")
                               f.write("- Try different hyperparameters (learning rate, batch size)\n")
-                              f.write("- Check data quality and preprocessing steps\n")
-                          elif accuracy < 0.85:
+                              f.write("- Review data preprocessing and feature engineering\n")
+                          elif (single_acc and single_acc < 0.85) or (multi_acc and multi_acc < 0.8):
                               f.write("- Fine-tune hyperparameters for better performance\n")
-                              f.write("- Consider data augmentation techniques\n")
-                              f.write("- Try ensemble methods\n")
+                              f.write("- Consider attention mechanisms or more advanced architectures\n")
+                              f.write("- Experiment with different prediction horizons\n")
                           else:
-                              f.write("- Great performance! Consider model deployment\n")
-                              f.write("- Document successful hyperparameters for future experiments\n")
+                              f.write("- Excellent performance! Consider model deployment\n")
+                              f.write("- Document successful configuration for future experiments\n")
+                              f.write("- Test on different datasets to validate generalization\n")
                       
                       f.write("\n---\n\n")
                   
                   # Summary and next steps
                   f.write(f"## 🎯 Summary & Next Steps\n\n")
-                  if best_model:
-                      f.write(f"🏆 **Best performing model:** {best_model} with {best_accuracy:.3f} accuracy\n\n")
+                  if best_single_model:
+                      f.write(f"🥇 **Best single-step model:** {best_single_model} with {best_single_accuracy:.3f} accuracy\n")
+                  if best_multi_model:
+                      f.write(f"🎯 **Best multi-step model:** {best_multi_model} with {best_multi_accuracy:.3f} accuracy\n\n")
                   
                   running_count = len([r for r in runs if r.state == 'running'])
                   if running_count > 0:
@@ -300,10 +361,11 @@ jobs:
                       f.write(f"❌ **{failed_count} experiments failed** - Review logs for debugging\n\n")
                   
                   f.write("**Suggested Next Steps:**\n")
-                  f.write("- Compare successful configurations to identify patterns\n")
-                  f.write("- Consider hyperparameter optimization for top-performing models\n")
-                  f.write("- Plan production deployment for best model\n")
-                  f.write("- Document findings and learnings\n\n")
+                  f.write("- Compare single-step vs multi-step performance patterns\n")
+                  f.write("- Analyze error metrics (MAPE, MAE) for prediction quality insights\n")
+                  f.write("- Consider ensemble methods combining best single and multi-step models\n")
+                  f.write("- Plan production deployment for best performing models\n")
+                  f.write("- Document successful architectures and hyperparameters\n\n")
                   
                   f.write("---\n")
                   f.write(f"*Generated by WandB GitHub Action at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC* 🤖\n")
