@@ -1,4 +1,5 @@
 name: Get WandB Runs
+
 on:
   issue_comment:
 
@@ -10,13 +11,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
 
-      - name: Get commit SHA from PR event
-        id: getsha
-        run: |
-          echo "SHA=$(jq -r .pull_request.head.sha < $GITHUB_EVENT_PATH)" >> $GITHUB_OUTPUT
+      - name: Setup GitHub CLI
+        uses: actions/setup-gh-cli@v2
 
-      - name: Debug SHA
-        run: echo "SHA is ${{ steps.getsha.outputs.SHA }}"
+      - name: Get PR number from issue comment event
+        id: prnum
+        run: |
+          PR_NUM=$(jq -r .issue.number $GITHUB_EVENT_PATH)
+          echo "PR_NUM=$PR_NUM" >> $GITHUB_OUTPUT
+
+      - name: Get commit SHA from PR using gh CLI
+        id: getsha
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SHA=$(gh pr view ${{ steps.prnum.outputs.PR_NUM }} --json headRefOid -q .headRefOid)
+          echo "SHA=$SHA" >> $GITHUB_OUTPUT
+
+      - name: Debug - Show SHA
+        run: echo "Commit SHA: ${{ steps.getsha.outputs.SHA }}"
 
       - name: Setup Python
         uses: actions/setup-python@v4
@@ -34,7 +47,7 @@ jobs:
 
           entity = os.environ["WANDB_ENTITY"]
           project = os.environ["WANDB_PROJECT"]
-          sha = os.environ["TARGET_SHA"]
+          sha = os.environ.get("TARGET_SHA")
 
           print(f"Target SHA: {sha}")
 
@@ -48,8 +61,8 @@ jobs:
 
           exact_matched = [r for r in runs if r.commit == sha]
 
-          short_sha = sha[:7] if len(sha) >= 7 else sha
-          partial_matched = [r for r in runs if r.commit and r.commit.startswith(short_sha)]
+          short_sha = sha[:7] if sha else None
+          partial_matched = [r for r in runs if r.commit and short_sha and r.commit.startswith(short_sha)]
 
           print(f"Exact matched runs: {len(exact_matched)}")
           print(f"Partial matched runs: {len(partial_matched)}")
@@ -189,7 +202,7 @@ jobs:
           echo "Generated markdown content:"
           cat wandb_summary.md
 
-      - name: Install GitHub CLI
+      - name: Install GitHub CLI (for posting comment)
         run: |
           sudo apt update
           sudo apt install gh -y
