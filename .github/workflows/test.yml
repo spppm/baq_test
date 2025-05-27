@@ -15,25 +15,52 @@ jobs:
       - name: Extract Run ID from comment
         id: extract_run_id
         run: |
-          # Extracts the part after '/wandb_get_artifact '
-          # Example: /wandb_get_artifact 123xyz -> 123xyz
-          COMMENT_BODY="${{ github.event.comment.body }}"
-          TRIGGER_PHRASE="/wandb_get_artifact "
-          RUN_ID=$(echo "$COMMENT_BODY" | sed "s|^$TRIGGER_PHRASE||")
+          # Debug: Show the raw comment body
+          echo "Raw comment body: '${{ github.event.comment.body }}'"
           
-          # Basic validation: check if RUN_ID is not empty and doesn't contain spaces
-          if [ -z "$RUN_ID" ] || [[ "$RUN_ID" == *' '* ]]; then
-            echo "Error: Run ID not provided or invalid format after trigger phrase."
-            echo "Usage: /wandb_get_artifact <run_id>"
-            # Create a simple error markdown to be posted
-            echo "### ⚠️ Invalid Command" > artifact_summary.md
-            echo "Run ID not provided or invalid after trigger phrase." >> artifact_summary.md
-            echo "Please use the format: \`/wandb_get_artifact <run_id>\`" >> artifact_summary.md
-            echo "::set-output name=parse_error::true"
+          # Clean the comment body (remove potential carriage returns and extra whitespace)
+          COMMENT_BODY=$(echo "${{ github.event.comment.body }}" | tr -d '\r' | xargs)
+          echo "Cleaned comment body: '$COMMENT_BODY'"
+          
+          # Extract everything after '/wandb_get_artifact ' (with space)
+          if [[ "$COMMENT_BODY" =~ ^/wandb_get_artifact[[:space:]]+([^[:space:]]+).*$ ]]; then
+            RUN_ID="${BASH_REMATCH[1]}"
+            echo "Extracted Run ID: '$RUN_ID'"
+            
+            # Validate run ID (should be alphanumeric with possible hyphens/underscores)
+            if [[ "$RUN_ID" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+              echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
+              echo "parse_error=false" >> $GITHUB_OUTPUT
+              echo "✅ Successfully extracted valid Run ID: $RUN_ID"
+            else
+              echo "❌ Invalid Run ID format: $RUN_ID"
+              echo "parse_error=true" >> $GITHUB_OUTPUT
+            fi
           else
-            echo "Extracted Run ID: $RUN_ID"
-            echo "::set-output name=run_id::$RUN_ID"
-            echo "::set-output name=parse_error::false"
+            echo "❌ Could not extract Run ID from comment"
+            echo "parse_error=true" >> $GITHUB_OUTPUT
+          fi
+          
+          # Create error message if parsing failed
+          if [[ "${{ steps.extract_run_id.outputs.parse_error }}" != "false" ]]; then
+            cat > artifact_summary.md << 'EOF'
+### ⚠️ Invalid Command Format
+
+**Issue:** Could not extract a valid Run ID from your comment.
+
+**Your comment:** `${{ github.event.comment.body }}`
+
+**Expected format:** `/wandb_get_artifact <run_id>`
+
+**Examples:**
+- `/wandb_get_artifact msl21o9b`
+- `/wandb_get_artifact abc123def`
+
+**Requirements:**
+- Run ID should contain only letters, numbers, hyphens, and underscores
+- There should be a space between the command and the run ID
+- No extra spaces or special characters in the run ID
+EOF
           fi
         shell: bash
 
@@ -45,7 +72,7 @@ jobs:
           
       - name: Install wandb library
         if: steps.extract_run_id.outputs.parse_error == 'false'
-        run: pip install wandb pandas # pandas for potentially displaying tables
+        run: pip install wandb pandas
 
       - name: Create Python script for fetching artifacts
         if: steps.extract_run_id.outputs.parse_error == 'false'
@@ -53,11 +80,11 @@ jobs:
           cat > wandb_artifact_script.py << 'SCRIPT_EOF'
           import os
           import wandb
-          import pandas as pd # For table display
+          import pandas as pd
           from datetime import datetime
+          import traceback
 
           # Get environment variables
-          # WANDB_RUN_ID is passed from the previous step's output
           run_id = os.environ.get("WANDB_RUN_ID") 
           entity = os.environ.get("WANDB_ENTITY")
           project = os.environ.get("WANDB_PROJECT")
@@ -75,103 +102,130 @@ jobs:
               return f"{s} {size_name[i]}"
 
           def generate_artifact_report():
+              print(f"🔍 Fetching artifacts for Run ID: {run_id}")
+              print(f"📊 Project: {entity}/{project}")
+              
               if not all([run_id, entity, project]):
+                  missing = []
+                  if not run_id: missing.append("WANDB_RUN_ID")
+                  if not entity: missing.append("WANDB_ENTITY") 
+                  if not project: missing.append("WANDB_PROJECT")
+                  
                   with open(output_file, "w") as f:
                       f.write("### ⚠️ Configuration Error\n\n")
-                      f.write("Missing one or more required environment variables: `WANDB_RUN_ID`, `WANDB_ENTITY`, `WANDB_PROJECT`.\n")
-                      f.write("Ensure `WANDB_ENTITY` and `WANDB_PROJECT` are set as GitHub secrets.\n")
-                  print("Error: Missing environment variables.")
+                      f.write(f"Missing required environment variables: `{', '.join(missing)}`\n\n")
+                      f.write("**Required GitHub Secrets:**\n")
+                      f.write("- `WANDB_API_KEY`: Your W&B API key\n")
+                      f.write("- `WANDB_ENTITY`: Your W&B username or team name\n")
+                      f.write("- `WANDB_PROJECT`: Your W&B project name\n")
+                  print(f"❌ Error: Missing environment variables: {missing}")
                   return
 
-              print(f"Fetching artifacts for Run ID: {run_id} in project {entity}/{project}")
-              
-              api = wandb.Api(timeout=60)
-              
               try:
+                  print("🔑 Initializing W&B API...")
+                  api = wandb.Api(timeout=60)
+                  
+                  print(f"📡 Fetching run: {entity}/{project}/{run_id}")
                   run = api.run(f"{entity}/{project}/{run_id}")
-                  print(f"Successfully fetched run: {run.name} (ID: {run.id})")
-              except Exception as e:
-                  print(f"Error fetching run '{run_id}': {e}")
+                  print(f"✅ Successfully fetched run: {run.name} (ID: {run.id})")
+                  
+                  # Fetch logged artifacts
+                  print("🏺 Fetching artifacts...")
+                  artifacts = run.logged_artifacts()
+                  print(f"📦 Found {len(artifacts)} artifacts")
+                  
                   with open(output_file, "w") as f:
-                      f.write(f"### ❌ Error Fetching Run\n\n")
-                      f.write(f"Could not fetch W&B Run with ID: `{run_id}` for project `{entity}/{project}`.\n")
-                      f.write(f"**Details:** {str(e)}\n\n")
-                      f.write("Please ensure the Run ID is correct and the necessary permissions are available.")
-                  return
-
-              # Fetch logged artifacts. run.artifacts could also be used.
-              # run.logged_artifacts() usually returns artifacts explicitly logged via `run.log_artifact()`
-              artifacts = run.logged_artifacts()
-              
-              with open(output_file, "w") as f:
-                  f.write(f"# 🏺 Artifact Report for W&B Run: `{run.name}`\n")
-                  f.write(f"**Run ID:** `{run.id}` | **Project:** `{entity}/{project}`\n")
-                  f.write(f"**Created At:** {run.created_at} | **State:** {run.state}\n\n")
-                  
-                  if not artifacts:
-                      f.write("## ℹ️ No Artifacts Found\n\n")
-                      f.write("This run does not have any logged artifacts.\n")
-                  else:
-                      f.write(f"## 📜 Artifacts Summary ({len(artifacts)})\n\n")
-                      for idx, artifact in enumerate(artifacts):
-                          f.write(f"### {idx+1}. {artifact.name} (Type: `{artifact.type}`)\n")
-                          f.write(f"- **Version:** `{artifact.version}` (ID: `{artifact.id}`)\n")
-                          f.write(f"- **Digest:** `{artifact.digest}`\n")
-                          f.write(f"- **Size:** {format_size(artifact.size)}\n")
-                          f.write(f"- **Created At:** {artifact.created_at}\n")
+                      f.write(f"# 🏺 Artifact Report for W&B Run: `{run.name}`\n\n")
+                      f.write(f"| **Field** | **Value** |\n")
+                      f.write(f"|-----------|----------|\n")
+                      f.write(f"| **Run ID** | `{run.id}` |\n")
+                      f.write(f"| **Project** | `{entity}/{project}` |\n")
+                      f.write(f"| **Created** | {run.created_at} |\n")
+                      f.write(f"| **State** | {run.state} |\n")
+                      f.write(f"| **Artifacts** | {len(artifacts)} |\n\n")
+                      
+                      if not artifacts:
+                          f.write("## ℹ️ No Artifacts Found\n\n")
+                          f.write("This run does not have any logged artifacts.\n\n")
+                          f.write("**Possible reasons:**\n")
+                          f.write("- The run hasn't logged any artifacts yet\n")
+                          f.write("- Artifacts were logged to a different run\n")
+                          f.write("- The run is still in progress\n")
+                      else:
+                          f.write(f"## 📜 Artifacts Summary ({len(artifacts)})\n\n")
                           
-                          if artifact.description:
-                              f.write(f"- **Description:** {artifact.description}\n")
-                          
-                          if artifact.metadata:
-                              f.write("- **Metadata:**\n")
-                              for k, v in artifact.metadata.items():
-                                  f.write(f"  - `{k}`: `{v}`\n")
-                          
-                          # Attempt to preview content for specific types
-                          try:
-                              if artifact.type == 'dataset' or artifact.type == 'table' or 'table' in artifact.name.lower():
-                                  # Check for manifest entries, especially tables
-                                  manifest_entries = list(artifact.manifest.entries.keys())
-                                  table_files = [entry for entry in manifest_entries if entry.endswith('.table.json')]
-                                  if table_files:
-                                      f.write("- **Preview (Table):**\n")
-                                      # For simplicity, we'll just indicate a table is present.
-                                      # Downloading and parsing tables can be complex here.
-                                      # A more advanced version might download and show a few rows.
-                                      f.write(f"  - Contains table data (e.g., `{table_files[0]}`). View on W&B for details.\n")
-                                  else:
-                                      f.write(f"  - Dataset artifact. Contains {len(manifest_entries)} files/references.\n")
-
-                              elif artifact.type == 'model':
-                                  f.write("- **Preview (Model):**\n")
-                                  f.write(f"  - Model artifact. Contains files related to a trained model.\n")
-                                  # List some files if available in manifest
-                                  if artifact.manifest:
-                                      model_files = list(artifact.manifest.entries.keys())[:3] # Show first 3 files
-                                      if model_files:
-                                          f.write(f"  - Example files: `{', '.join(model_files)}`\n")
+                          for idx, artifact in enumerate(artifacts):
+                              f.write(f"### {idx+1}. `{artifact.name}` \n\n")
+                              f.write(f"| **Property** | **Value** |\n")
+                              f.write(f"|--------------|----------|\n")
+                              f.write(f"| **Type** | `{artifact.type}` |\n")
+                              f.write(f"| **Version** | `{artifact.version}` |\n")
+                              f.write(f"| **ID** | `{artifact.id}` |\n")
+                              f.write(f"| **Digest** | `{artifact.digest[:12]}...` |\n")
+                              f.write(f"| **Size** | {format_size(artifact.size)} |\n")
+                              f.write(f"| **Created** | {artifact.created_at} |\n")
                               
-                              # Simple text file preview (if a single small text file)
-                              elif len(artifact.manifest.entries) == 1:
-                                  entry_name = list(artifact.manifest.entries.keys())[0]
-                                  if entry_name.endswith(('.txt', '.json', '.yaml', '.yml', '.md', '.csv', '.log')):
-                                      # Downloading artifact content in action can be slow/complex for large files
-                                      # For now, just indicate the file type.
-                                      # A more robust solution would download and show a snippet if size is small.
-                                      f.write(f"- **Content Hint:** Contains a `{entry_name.split('.')[-1]}` file: `{entry_name}`.\n")
+                              if artifact.description:
+                                  f.write(f"| **Description** | {artifact.description} |\n")
+                              
+                              f.write(f"\n")
+                              
+                              if artifact.metadata:
+                                  f.write("**Metadata:**\n")
+                                  for k, v in artifact.metadata.items():
+                                      f.write(f"- `{k}`: `{v}`\n")
+                                  f.write("\n")
+                              
+                              # File contents preview
+                              try:
+                                  if artifact.manifest and len(artifact.manifest.entries) > 0:
+                                      f.write("**Files:**\n")
+                                      file_count = 0
+                                      for entry_name, entry in artifact.manifest.entries.items():
+                                          if file_count >= 5:  # Limit to first 5 files
+                                              f.write(f"- ... and {len(artifact.manifest.entries) - 5} more files\n")
+                                              break
+                                          f.write(f"- `{entry_name}` ({format_size(entry.size)})\n")
+                                          file_count += 1
+                                      f.write("\n")
+                              except Exception as preview_e:
+                                  print(f"⚠️ Could not list files for {artifact.name}: {preview_e}")
+                              
+                              # Construct artifact URL (more robust)
+                              try:
+                                  base_url = run.url.split('/runs/')[0]  # Get base project URL
+                                  artifact_url = f"{base_url}/artifacts/{artifact.type}/{artifact.name}/{artifact.version}"
+                                  f.write(f"**[➡️ View on W&B]({artifact_url})**\n\n")
+                              except:
+                                  f.write(f"**[➡️ View Run on W&B]({run.url})**\n\n")
+                              
+                              f.write("---\n\n")
+                      
+                      f.write(f"\n*📅 Report generated at {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC*\n")
+                      f.write(f"*🔗 [View full run details on W&B]({run.url})*\n")
 
-                          except Exception as preview_e:
-                              print(f"Could not generate preview for {artifact.name}: {preview_e}")
-                              f.write("- *Preview generation encountered an issue.*\n")
+                  print(f"✅ Artifact report generated successfully")
 
-                          f.write(f"- **[➡️ View Artifact on W&B](https{':'.join(str(run.url).split(':')[1:])}/artifacts/{artifact.type}/{artifact.name.replace(':', '%3A')}/{artifact.version})**\n") # Construct artifact URL
-                          f.write("\n---\n\n")
+              except Exception as e:
+                  print(f"❌ Error occurred: {str(e)}")
+                  print("📋 Full traceback:")
+                  traceback.print_exc()
                   
-                  f.write(f"\n*Report generated by WandB GitHub Action at {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S %Z')} UTC* 🤖\n")
-                  f.write(f"*View full run details: [W&B Run Page]({run.url})*")
-
-              print(f"Artifact report generated: {output_file}")
+                  with open(output_file, "w") as f:
+                      f.write(f"### ❌ Error Fetching Artifacts\n\n")
+                      f.write(f"**Run ID:** `{run_id}`\n")
+                      f.write(f"**Project:** `{entity}/{project}`\n\n")
+                      f.write(f"**Error Details:**\n")
+                      f.write(f"```\n{str(e)}\n```\n\n")
+                      f.write("**Common Issues:**\n")
+                      f.write("- Run ID doesn't exist or is incorrect\n")
+                      f.write("- Insufficient permissions (check WANDB_API_KEY)\n")
+                      f.write("- Wrong entity/project combination\n")
+                      f.write("- Network connectivity issues\n\n")
+                      f.write("**Troubleshooting:**\n")
+                      f.write("1. Verify the run ID exists in your W&B project\n")
+                      f.write("2. Check that WANDB_ENTITY and WANDB_PROJECT are correct\n")
+                      f.write("3. Ensure WANDB_API_KEY has proper permissions\n")
 
           if __name__ == "__main__":
               generate_artifact_report()
@@ -181,40 +235,43 @@ jobs:
         if: steps.extract_run_id.outputs.parse_error == 'false'
         env:
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-          WANDB_ENTITY: ${{ secrets.WANDB_ENTITY }}    # Your W&B username or team name
-          WANDB_PROJECT: ${{ secrets.WANDB_PROJECT }}  # Your W&B project name
-          WANDB_RUN_ID: ${{ steps.extract_run_id.outputs.run_id }} # Pass the extracted run_id
+          WANDB_ENTITY: ${{ secrets.WANDB_ENTITY }}
+          WANDB_PROJECT: ${{ secrets.WANDB_PROJECT }}
+          WANDB_RUN_ID: ${{ steps.extract_run_id.outputs.run_id }}
         run: python wandb_artifact_script.py
         
-      - name: Debug - Display generated markdown content
-        if: always() # Run this step even if previous steps fail, for debugging
+      - name: Debug - Display generated content
+        if: always()
         run: |
-          echo "--- Generated Markdown Content (artifact_summary.md) ---"
+          echo "🔍 Debug Information:"
+          echo "- Extracted Run ID: ${{ steps.extract_run_id.outputs.run_id }}"
+          echo "- Parse Error: ${{ steps.extract_run_id.outputs.parse_error }}"
+          echo ""
+          echo "📄 Generated artifact_summary.md:"
+          echo "===================="
           if [ -f artifact_summary.md ]; then
             cat artifact_summary.md
           else
-            echo "artifact_summary.md not found."
+            echo "❌ artifact_summary.md not found"
           fi
-          echo "--- End of Markdown Content ---"
+          echo "===================="
           
       - name: Install GitHub CLI
         run: |
-          # Ensure apt sources are updated before trying to install
           sudo apt-get update -y
           sudo apt-get install -y gh
           
-      - name: Comment to PR with Artifact Summary
+      - name: Comment on PR with Artifact Summary
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.issue.number }}
         run: |
-          echo "Attempting to comment on PR #$PR_NUMBER with artifact_summary.md"
+          echo "💬 Commenting on PR #$PR_NUMBER"
           if [ -f artifact_summary.md ]; then
             gh pr comment $PR_NUMBER --body-file artifact_summary.md
-            echo "Successfully commented on PR #$PR_NUMBER."
+            echo "✅ Successfully commented on PR #$PR_NUMBER"
           else
-            echo "Error: artifact_summary.md not found. Cannot comment."
-            # Optionally, post a generic error comment if the file is missing
-            # gh pr comment $PR_NUMBER --body "Error: Could not generate W&B artifact report."
-            exit 1 # Indicate failure
+            echo "❌ artifact_summary.md not found, posting error comment"
+            gh pr comment $PR_NUMBER --body "❌ **Error:** Could not generate W&B artifact report. Check the action logs for details."
+            exit 1
           fi
