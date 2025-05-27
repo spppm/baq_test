@@ -1,5 +1,4 @@
 name: Show Artifacts from W&B Run
-
 on:
   issue_comment:
     types: [created]
@@ -8,7 +7,6 @@ jobs:
   show-artifacts:
     if: github.event.issue.pull_request != null && startsWith(github.event.comment.body, '/wandb_promote')
     runs-on: ubuntu-latest
-
     steps:
       - name: Extract Run ID
         id: extract
@@ -16,16 +14,16 @@ jobs:
           COMMENT="${{ github.event.comment.body }}"
           RUN_ID=$(echo "$COMMENT" | awk '{print $2}')
           echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
-
+          
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
-
+          
       - name: Install wandb
         run: |
           pip install wandb
-
+          
       - name: Fetch artifact info from W&B
         id: fetch
         env:
@@ -33,29 +31,38 @@ jobs:
           WANDB_ENTITY: ${{ secrets.WANDB_ENTITY }}
           WANDB_PROJECT: ${{ secrets.WANDB_PROJECT }}
         run: |
-          echo "
-import os
-import wandb
-from wandb.apis import PublicApi
-
-entity = os.getenv('WANDB_ENTITY')
-project = os.getenv('WANDB_PROJECT')
-run_id = '${{ steps.extract.outputs.run_id }}'
-
-api = PublicApi()
-run = api.run(f'{entity}/{project}/{run_id}')
-
-artifacts = run.logged_artifacts()
-if not artifacts:
-    print('::set-output name=artifacts::No artifacts found.')
-else:
-    lines = [f'- {a.name} ({a.type})' for a in artifacts]
-    output = '\\n'.join(lines)
-    print(f'::set-output name=artifacts::{output}')
-" > fetch_artifact.py
-
+          cat > fetch_artifact.py << 'EOF'
+          import os
+          import wandb
+          from wandb.apis import PublicApi
+          
+          entity = os.getenv('WANDB_ENTITY')
+          project = os.getenv('WANDB_PROJECT')
+          run_id = '${{ steps.extract.outputs.run_id }}'
+          
+          try:
+              api = PublicApi()
+              run = api.run(f'{entity}/{project}/{run_id}')
+              artifacts = run.logged_artifacts()
+              
+              if not artifacts:
+                  output = 'No artifacts found.'
+              else:
+                  lines = [f'- {a.name} ({a.type})' for a in artifacts]
+                  output = '\n'.join(lines)
+              
+              # Write to GitHub output
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                  f.write(f"artifacts<<EOF\n{output}\nEOF\n")
+                  
+          except Exception as e:
+              error_msg = f"Error fetching artifacts: {str(e)}"
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                  f.write(f"artifacts<<EOF\n{error_msg}\nEOF\n")
+          EOF
+          
           python fetch_artifact.py
-
+          
       - name: Comment artifact list on PR
         uses: peter-evans/create-or-update-comment@v3
         with:
