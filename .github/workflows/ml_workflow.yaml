@@ -262,4 +262,3 @@ jobs:
           echo "Attempting to comment on PR #$PR_NUMBER"
           gh pr comment $PR_NUMBER --body-file wandb_summary.md
           echo "Successfully commented on PR #$PR_NUMBER."
-�
