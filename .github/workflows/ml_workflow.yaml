@@ -1,23 +1,17 @@
 name: Get WandB Runs
 on:
-  issue_comment:
+  pull_request:
 
 jobs:
   get-runs:
-    if: github.event.issue.pull_request != null && contains(github.event.comment.body, '/wandb_list_model')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v3
         
-      - name: Get SHA from PR comment
-        id: chatops
-        uses: machine-learning-apps/actions-chatops@master
-        with:
-          TRIGGER_PHRASE: "/wandb_list_model"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          
+      - name: Debug - Show PR head SHA
+        run: echo "Using commit SHA: ${{ github.event.pull_request.head.sha }}"
+        
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
@@ -60,7 +54,6 @@ jobs:
           matched_runs = exact_matched if exact_matched else (partial_matched if partial_matched else runs)
           
           def get_performance_emoji(accuracy):
-              """Get emoji based on accuracy performance"""
               if accuracy is None:
                   return "❓"
               if accuracy >= 0.95:
@@ -77,7 +70,6 @@ jobs:
                   return "⚠️"
           
           def format_runtime(runtime_seconds):
-              """Format runtime in a readable way"""
               if runtime_seconds is None:
                   return "N/A"
               if runtime_seconds < 60:
@@ -98,10 +90,8 @@ jobs:
               else:
                   f.write("## 📋 Latest Model Performance\n")
                   f.write(f"*No runs found for commit `{sha[:8]}...`, showing latest model runs:*\n\n")
-                  # Sort by creation date and limit to recent runs
                   matched_runs = sorted(runs, key=lambda x: x.created_at, reverse=True)[:10]
               
-              # Performance summary
               best_accuracy = 0
               best_model = None
               total_runtime = 0
@@ -121,23 +111,19 @@ jobs:
                   f.write(f"🏆 **Best Performer:** {best_model} ({best_accuracy:.3f} accuracy)\n")
                   f.write(f"⏱️ **Total Training Time:** {format_runtime(total_runtime)}\n\n")
               
-              # Create performance comparison table
               f.write("| Model | Performance | Accuracy | Loss | Runtime | Status | Link |\n")
               f.write("|-------|-------------|----------|------|---------|--------|----- |\n")
               
               for run in matched_runs:
-                  # Get key metrics
                   accuracy = run.summary.get('accuracy') or run.summary.get('best_val_acc') or run.summary.get('val_accuracy')
                   loss = run.summary.get('loss') or run.summary.get('best_val_loss') or run.summary.get('val_loss')
                   runtime = run.summary.get('_runtime')
                   
-                  # Format values
                   perf_emoji = get_performance_emoji(accuracy)
                   acc_str = f"{accuracy:.3f}" if accuracy is not None else "N/A"
                   loss_str = f"{loss:.4f}" if loss is not None else "N/A"
                   runtime_str = format_runtime(runtime)
                   
-                  # Status emoji
                   status_emoji = "✅" if run.state == "finished" else "🔄" if run.state == "running" else "❌"
                   
                   f.write(f"| **{run.name}** | {perf_emoji} | {acc_str} | {loss_str} | {runtime_str} | {status_emoji} | [View]({run.url}) |\n")
@@ -145,15 +131,12 @@ jobs:
               f.write(f"\n📊 **Performance Legend:**\n")
               f.write("🏆 Excellent (95%+) | 🥇 Great (90%+) | 🥈 Good (85%+) | 🥉 Fair (80%+) | 👍 OK (70%+) | ⚠️ Needs Work\n\n")
               
-              # Add detailed metrics for each run
               if matched_runs:
                   f.write(f"## 📈 Detailed Metrics\n\n")
-                  
                   for run in matched_runs:
                       accuracy = run.summary.get('accuracy') or run.summary.get('best_val_acc') or run.summary.get('val_accuracy')
                       f.write(f"### {get_performance_emoji(accuracy)} {run.name}\n")
                       
-                      # Core metrics
                       core_metrics = {
                           "Accuracy": run.summary.get('accuracy') or run.summary.get('best_val_acc') or run.summary.get('val_accuracy'),
                           "Loss": run.summary.get('loss') or run.summary.get('best_val_loss') or run.summary.get('val_loss'),
@@ -194,7 +177,7 @@ jobs:
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
           WANDB_ENTITY: ${{ secrets.WANDB_ENTITY }}
           WANDB_PROJECT: ${{ secrets.WANDB_PROJECT }}
-          TARGET_SHA: ${{ steps.chatops.outputs.SHA }}
+          TARGET_SHA: ${{ github.event.pull_request.head.sha }}
         run: python wandb_script.py
         
       - name: Debug - Show generated markdown
@@ -211,4 +194,4 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh pr comment ${{ github.event.issue.number }} --body-file wandb_summary.md
+          gh pr comment ${{ github.event.pull_request.number }} --body-file wandb_summary.md
