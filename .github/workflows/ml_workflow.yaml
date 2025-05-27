@@ -1,145 +1,135 @@
-name: Get WandB Runs
+name: Get All WandB Runs
+
 on:
   issue_comment:
+    types: [created]
 
 jobs:
-  get-runs:
-    if: github.event.issue.pull_request != null && contains(github.event.comment.body, '/wandb_list_model')
+  get-all-wandb-runs:
+    # Only run on PR comment events that contain the trigger phrase
+    if: github.event.issue.pull_request != null && contains(github.event.comment.body, '/wandb_list_models')
     runs-on: ubuntu-latest
-    
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
-       
-      - name: Get SHA from PR comment
-        id: chatops
-        uses: machine-learning-apps/actions-chatops@master
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get PR Number from Comment (ChatOps)
+        id: chatops # This step is still useful for the trigger phrase logic, even if SHA is not used for filtering
+        uses: machine-learning-apps/actions-chatops@master # Or consider a more recent/maintained chatops action if available
         with:
-          TRIGGER_PHRASE: "/wandb_list_model"
+          TRIGGER_PHRASE: "/wandb_list_models" # Ensure this matches your intended command
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-       
+
       - name: Setup Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.9'
-       
+
       - name: Install wandb
         run: pip install wandb
-       
-      - name: Fetch W&B Runs with enhanced matching
+
+      - name: Fetch W&B Runs and generate markdown
         env:
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-          WANDB_ENTITY: ${{ secrets.WANDB_ENTITY }}
-          WANDB_PROJECT: ${{ secrets.WANDB_PROJECT }}
-          TARGET_SHA: ${{ steps.chatops.outputs.SHA }}
-          PR_NUMBER: ${{ github.event.issue.number }}
+          WANDB_ENTITY: ${{ secrets.WANDB_ENTITY }} # Your W&B username or team name
+          WANDB_PROJECT: ${{ secrets.WANDB_PROJECT }} # Your W&B project name
+          # TARGET_SHA is no longer strictly needed by the python script for filtering all runs
         run: |
           python <<EOF
           import os
           import wandb
-          from datetime import datetime, timedelta
-          
-          entity = os.environ["WANDB_ENTITY"]
-          project = os.environ["WANDB_PROJECT"]
-          target_sha = os.environ["TARGET_SHA"]
-          pr_number = os.environ["PR_NUMBER"]
-          
-          print(f"Target SHA: {target_sha}")
-          print(f"PR Number: {pr_number}")
-          
-          api = wandb.Api()
-          
-          # Get recent runs (last 30 days) to avoid fetching too many
-          runs = api.runs(f"{entity}/{project}", 
-                         filters={"created_at": {"$gt": (datetime.now() - timedelta(days=30)).isoformat()}})
-          
-          print(f"Total recent runs fetched: {len(runs)}")
-          
-          # Debug: Show all runs with their commits
-          for r in runs:
-              commit = getattr(r, 'commit', None) or 'No commit'
-              print(f"Run: {r.name}, Commit: {commit}, Created: {r.created_at}")
-          
-          # Strategy 1: Exact SHA match
-          exact_matches = [r for r in runs if getattr(r, 'commit', None) == target_sha]
-          
-          # Strategy 2: Partial SHA match (first 7 characters)
-          partial_matches = [r for r in runs if getattr(r, 'commit', None) and 
-                           getattr(r, 'commit', '')[:7] == target_sha[:7]]
-          
-          # Strategy 3: Look for runs with PR-related tags or names
-          pr_matches = [r for r in runs if f"pr-{pr_number}" in r.name.lower() or 
-                       f"pull-{pr_number}" in r.name.lower() or
-                       (hasattr(r, 'tags') and any(f"pr-{pr_number}" in str(tag).lower() for tag in (r.tags or [])))]
-          
-          # Strategy 4: Recent runs (last 24 hours) if no exact matches
-          recent_cutoff = datetime.now() - timedelta(hours=24)
-          recent_matches = [r for r in runs if r.created_at and 
-                          datetime.fromisoformat(r.created_at.replace('Z', '+00:00')) > recent_cutoff]
-          
+
+          entity = os.environ.get("WANDB_ENTITY")
+          project = os.environ.get("WANDB_PROJECT")
+
+          if not entity or not project:
+              print("Error: WANDB_ENTITY and WANDB_PROJECT environment variables must be set.")
+              exit(1)
+
+          print(f"Fetching runs from W&B project: {entity}/{project}")
+
+          try:
+              api = wandb.Api(timeout=30) # Increased timeout for potentially many runs
+              runs = api.runs(f"{entity}/{project}")
+          except Exception as e:
+              print(f"Error fetching runs from W&B: {e}")
+              with open("wandb_summary.md", "w") as f:
+                  f.write(f"### 📊 WandB Project Run Summary for {entity}/{project}\n\n")
+                  f.write(f"Failed to fetch runs from W&B. Error: {e}\n")
+              exit(0) # Exit gracefully so the comment step can still post the error
+
+          print(f"Total runs fetched: {len(runs)}")
+
+          # For debugging: print details of fetched runs to workflow logs
+          # for r_debug in runs:
+          #     print(f"Debug - Run Name: {r_debug.name}, ID: {r_debug.id}, Commit: {r_debug.commit}, Tags: {r_debug.tags}, Summary: {dict(r_debug.summary)}")
+
+
           with open("wandb_summary.md", "w") as f:
-              f.write(f"### 📊 WandB Run Summary for SHA `{target_sha[:8]}`\n\n")
-              
-              if exact_matches:
-                  f.write("#### ✅ Exact SHA Matches:\n")
-                  for run in exact_matches:
-                      write_run_details(f, run)
-              elif partial_matches:
-                  f.write("#### 🔍 Partial SHA Matches (first 7 chars):\n")
-                  for run in partial_matches:
-                      write_run_details(f, run)
-              elif pr_matches:
-                  f.write(f"#### 🔗 PR-{pr_number} Related Runs:\n")
-                  for run in pr_matches:
-                      write_run_details(f, run)
-              elif recent_matches:
-                  f.write("#### ⏰ Recent Runs (last 24 hours):\n")
-                  f.write("*No exact SHA match found, showing recent runs instead*\n\n")
-                  for run in recent_matches[:5]:  # Limit to 5 most recent
-                      write_run_details(f, run)
+              f.write(f"### 📊 WandB Project Run Summary: {project}\n\n")
+              if not runs:
+                  f.write("No runs found in this project.\n")
               else:
-                  f.write("❌ No matching runs found.\n\n")
-                  f.write("**Debugging Info:**\n")
-                  f.write(f"- Target SHA: `{target_sha}`\n")
-                  f.write(f"- Total runs checked: {len(runs)}\n")
-                  if runs:
-                      f.write("- Sample commits from recent runs:\n")
-                      for run in runs[:3]:
-                          commit = getattr(run, 'commit', 'No commit')
-                          f.write(f"  - `{commit}` ({run.name})\n")
-          
-          def write_run_details(f, run):
-              commit_short = getattr(run, 'commit', 'N/A')[:8] if getattr(run, 'commit', None) else 'N/A'
-              f.write(f"- **[{run.name}]({run.url})** (commit: `{commit_short}`)\n")
-              
-              # Key metrics to display
-              metrics = ["accuracy", "loss", "best_val_acc", "best_val_loss", "val_accuracy", "test_accuracy", "_runtime"]
-              displayed_metrics = []
-              
-              for k in metrics:
-                  v = run.summary.get(k)
-                  if v is not None:
-                      if isinstance(v, float):
-                          displayed_metrics.append(f"{k}: `{v:.4f}`")
+                  # Sort runs by creation time (newest first) for better readability
+                  sorted_runs = sorted(runs, key=lambda r: r.created_at, reverse=True)
+                  
+                  f.write(f"Displaying {len(sorted_runs)} runs (newest first):\n\n")
+                  for run in sorted_runs:
+                      f.write(f"--- \n") # Separator for readability
+                      f.write(f"#### [{run.name}]({run.url})\n")
+                      f.write(f"- **ID:** `{run.id}`\n")
+                      f.write(f"- **State:** `{run.state}`\n")
+                      if run.commit:
+                          f.write(f"- **Commit:** `{run.commit[:7]}`\n") # Short SHA
+                      if run.tags:
+                          f.write(f"- **Tags:** `{', '.join(run.tags)}`\n")
+                      f.write(f"- **Created At:** `{run.created_at}`\n")
+                      
+                      summary_dict = dict(run.summary)
+                      if not summary_dict:
+                          f.write("- **Summary:** `No summary metrics available.`\n")
                       else:
-                          displayed_metrics.append(f"{k}: `{v}`")
-              
-              if displayed_metrics:
-                  f.write(f"  - {' | '.join(displayed_metrics)}\n")
-              else:
-                  f.write(f"  - No key metrics found\n")
-              
-              f.write(f"  - Created: {run.created_at}\n\n")
+                          f.write("- **Summary Metrics:**\n")
+                          # Prioritize common metrics, then list others
+                          priority_metrics = ["accuracy", "loss", "val_accuracy", "val_loss", "epoch", "learning_rate", "_runtime", "_timestamp"]
+                          displayed_metrics = set()
+
+                          for k in priority_metrics:
+                              if k in summary_dict:
+                                  v = summary_dict[k]
+                                  v_formatted = f"{v:.4f}" if isinstance(v, float) else v
+                                  f.write(f"  - `{k}`: `{v_formatted}`\n")
+                                  displayed_metrics.add(k)
+                          
+                          # Display other metrics not in priority list
+                          other_metrics_count = 0
+                          for k, v in summary_dict.items():
+                              if k not in displayed_metrics and not k.startswith('_'): # Exclude internal W&B keys already handled or not useful
+                                  if other_metrics_count == 0:
+                                      f.write("  - **Other Metrics:**\n")
+                                  v_formatted = f"{v:.4f}" if isinstance(v, float) else v
+                                  f.write(f"    - `{k}`: `{v_formatted}`\n")
+                                  displayed_metrics.add(k) # Ensure it's not listed again if somehow duplicated
+                                  other_metrics_count +=1
+                          
+                          if not displayed_metrics and not other_metrics_count: # If summary_dict was not empty but no suitable metrics found
+                               f.write("  - `Summary available but no standard metrics found. Check run page for details.`\n")
+                      f.write("\n") # Add a newline for separation between runs
+          print("wandb_summary.md file generated.")
           EOF
-       
+
       - name: Install GitHub CLI
         run: |
-          sudo apt update
-          sudo apt install gh -y
-       
-      - name: Comment to PR
+          sudo apt-get update
+          sudo apt-get install -y gh
+
+      - name: Comment to PR with WandB Summary
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.issue.number }}
         run: |
-          gh pr comment ${{ github.event.issue.number }} --body-file wandb_summary.md
+          echo "Commenting on PR Number: $PR_NUMBER"
+          gh pr comment $PR_NUMBER --body-file wandb_summary.md
+          echo "Commented successfully."
+        # Add error handling for gh pr comment if needed
