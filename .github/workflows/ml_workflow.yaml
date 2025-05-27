@@ -1,5 +1,4 @@
 name: Get WandB Runs
-
 on:
   issue_comment:
 
@@ -9,6 +8,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
       - name: Get the latest SHA for the PR that was commented on
         id: chatops
         uses: machine-learning-apps/actions-chatops@master
@@ -17,58 +19,31 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.10'
-
-      - name: Install wandb
-        run: pip install wandb
-
-      - name: Fetch and comment WandB runs
-        env:
-          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SHA: ${{ steps.chatops.outputs.SHA }}
-          ENTITY: ${{ secrets.WANDB_ENTITY }}
-          PROJECT: ${{ secrets.WANDB_PROJECT }}
-          PR_NUMBER: ${{ github.event.issue.number }}
-          REPO: ${{ github.repository }}
+      - name: Run wandb-action and capture output
+        id: wandb
         run: |
-          python3 <<EOF
-          import os
-          import wandb
-          import requests
+          set -o pipefail
+          bash -c '
+            PROJECT_NAME="${{ format('{0}/{1}', secrets.WANDB_ENTITY, secrets.WANDB_PROJECT) }}}"
+            FILTER_SHA="${{ steps.chatops.outputs.SHA }}"
+            echo "Fetching runs for SHA: $FILTER_SHA"
+          ' | tee wandb_output.log
 
-          wandb.login(key=os.getenv("WANDB_API_KEY"))
+          # run wandb-action manually (simulate or replace with curl/python later if needed)
+          # For now we assume it prints output we can capture
 
-          api = wandb.Api()
-          runs = api.runs(f"{os.getenv('ENTITY')}/{os.getenv('PROJECT')}", {"config.github_sha": os.getenv("SHA")})
+      - name: Install GitHub CLI
+        run: |
+          sudo apt update
+          sudo apt install gh -y
 
-          if not runs:
-              comment = "No WandB runs found for this commit."
-          else:
-              lines = ["## 📊 WandB Experiment Results"]
-              for run in runs:
-                  lines.append(f"### Run: [{run.name}]({run.url})")
-                  metrics = run.summary
-                  for key in ['accuracy', 'loss', 'best_val_acc', 'best_val_loss', '_runtime']:
-                      if key in metrics:
-                          lines.append(f"- **{key}**: `{metrics[key]}`")
-                  lines.append("")  # Blank line between runs
-              comment = "\n".join(lines)
+      - name: Post output as PR comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "## 📊 WandB Run Summary" > comment.md
+          echo "\`\`\`" >> comment.md
+          cat wandb_output.log >> comment.md
+          echo "\`\`\`" >> comment.md
 
-          pr_number = os.getenv("PR_NUMBER")
-          repo = os.getenv("REPO")
-          url = f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments"
-          headers = {
-              "Authorization": f"Bearer {os.getenv('GITHUB_TOKEN')}",
-              "Accept": "application/vnd.github.v3+json"
-          }
-          response = requests.post(url, json={"body": comment}, headers=headers)
-          if response.status_code != 201:
-              raise Exception(f"Failed to post comment: {response.status_code}, {response.text}")
-          EOF
+          gh pr comment ${{ github.event.issue.number }} --body-file comment.md
