@@ -8,10 +8,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v3
 
-      - name: Get the latest SHA for the PR that was commented on
+      - name: Get SHA from PR comment
         id: chatops
         uses: machine-learning-apps/actions-chatops@master
         with:
@@ -19,31 +19,52 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Run wandb-action and capture output
-        id: wandb
-        run: |
-          set -o pipefail
-          bash -c '
-            PROJECT_NAME="${{ format('{0}/{1}', secrets.WANDB_ENTITY, secrets.WANDB_PROJECT) }}}"
-            FILTER_SHA="${{ steps.chatops.outputs.SHA }}"
-            echo "Fetching runs for SHA: $FILTER_SHA"
-          ' | tee wandb_output.log
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
 
-          # run wandb-action manually (simulate or replace with curl/python later if needed)
-          # For now we assume it prints output we can capture
+      - name: Install wandb
+        run: pip install wandb
+
+      - name: Fetch W&B Runs and generate markdown
+        env:
+          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+          WANDB_ENTITY: ${{ secrets.WANDB_ENTITY }}
+          WANDB_PROJECT: ${{ secrets.WANDB_PROJECT }}
+          TARGET_SHA: ${{ steps.chatops.outputs.SHA }}
+        run: |
+          python <<EOF
+          import os
+          import wandb
+
+          entity = os.environ["WANDB_ENTITY"]
+          project = os.environ["WANDB_PROJECT"]
+          sha = os.environ["TARGET_SHA"]
+
+          api = wandb.Api()
+          runs = api.runs(f"{entity}/{project}")
+          matched = [r for r in runs if r.commit == sha]
+
+          with open("wandb_summary.md", "w") as f:
+              f.write(f"### 📊 WandB Run Summary for SHA `{sha}`\n\n")
+              if not matched:
+                  f.write("No matching runs found.\n")
+              for run in matched:
+                  f.write(f"- [{run.name}]({run.url})\n")
+                  for k in ["accuracy", "loss", "best_val_acc", "best_val_loss", "_runtime"]:
+                      v = run.summary.get(k, "N/A")
+                      f.write(f"  - {k}: `{v}`\n")
+                  f.write("\n")
+          EOF
 
       - name: Install GitHub CLI
         run: |
           sudo apt update
           sudo apt install gh -y
 
-      - name: Post output as PR comment
+      - name: Comment to PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "## 📊 WandB Run Summary" > comment.md
-          echo "\`\`\`" >> comment.md
-          cat wandb_output.log >> comment.md
-          echo "\`\`\`" >> comment.md
-
-          gh pr comment ${{ github.event.issue.number }} --body-file comment.md
+          gh pr comment ${{ github.event.issue.number }} --body-file wandb_summary.md
