@@ -48,17 +48,29 @@ jobs:
               if not artifacts:
                   output = 'No artifacts found.'
               else:
-                  lines = [f'- {a.name} ({a.type})' for a in artifacts]
+                  lines = []
+                  for artifact in artifacts:
+                      # Get more detailed info about each artifact
+                      lines.append(f'- **{artifact.name}** (Type: {artifact.type})')
+                      lines.append(f'  - Size: {artifact.size} bytes')
+                      lines.append(f'  - Version: {artifact.version}')
+                      lines.append(f'  - Created: {artifact.created_at}')
+                      if hasattr(artifact, 'description') and artifact.description:
+                          lines.append(f'  - Description: {artifact.description}')
+                      lines.append('')  # Empty line for spacing
+                  
                   output = '\n'.join(lines)
               
-              # Write to GitHub output
+              # Write to GitHub output using proper multiline format
+              delimiter = 'EOF_ARTIFACTS'
               with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-                  f.write(f"artifacts<<EOF\n{output}\nEOF\n")
+                  f.write(f"artifacts<<{delimiter}\n{output}\n{delimiter}\n")
                   
           except Exception as e:
-              error_msg = f"Error fetching artifacts: {str(e)}"
+              error_msg = f"❌ Error fetching artifacts: {str(e)}"
+              delimiter = 'EOF_ARTIFACTS'
               with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-                  f.write(f"artifacts<<EOF\n{error_msg}\nEOF\n")
+                  f.write(f"artifacts<<{delimiter}\n{error_msg}\n{delimiter}\n")
           EOF
           
           python fetch_artifact.py
@@ -69,7 +81,9 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           issue-number: ${{ github.event.issue.number }}
           body: |
-            🧾 Artifacts for run `${{ steps.extract.outputs.run_id }}`:
-            ```
+            ## 🧾 W&B Artifacts for Run `${{ steps.extract.outputs.run_id }}`
+            
             ${{ steps.fetch.outputs.artifacts }}
-            ```
+            
+            ---
+            *Use `/wandb_promote <run_id>` to fetch artifacts from any W&B run*
