@@ -1,4 +1,4 @@
- name: Get WandB Runs
+name: Get WandB Runs
 on:
   issue_comment:
 
