@@ -27,7 +27,7 @@ jobs:
       - name: Install wandb
         run: pip install wandb
 
-      - name: Fetch W&B Runs and generate markdown
+      - name: Fetch W&B Runs and generate markdown with debug info
         env:
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
           WANDB_ENTITY: ${{ secrets.WANDB_ENTITY }}
@@ -42,8 +42,15 @@ jobs:
           project = os.environ["WANDB_PROJECT"]
           sha = os.environ["TARGET_SHA"]
 
+          print(f"Target SHA: {sha}")
+
           api = wandb.Api()
           runs = api.runs(f"{entity}/{project}")
+
+          print(f"Total runs fetched: {len(runs)}")
+          for r in runs:
+              print(f"Run: {r.name}, Commit: {r.commit}")
+
           matched = [r for r in runs if r.commit == sha]
 
           with open("wandb_summary.md", "w") as f:
