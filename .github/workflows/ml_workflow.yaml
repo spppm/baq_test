@@ -6,10 +6,11 @@ jobs:
   get-runs:
     if: github.event.issue.pull_request != null && contains(github.event.comment.body, '/wandb_list_model')
     runs-on: ubuntu-latest
+    
     steps:
       - name: Checkout
         uses: actions/checkout@v3
-        
+       
       - name: Get SHA from PR comment
         id: chatops
         uses: machine-learning-apps/actions-chatops@master
@@ -17,96 +18,126 @@ jobs:
           TRIGGER_PHRASE: "/wandb_list_model"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          
+       
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
-          
+       
       - name: Install wandb
         run: pip install wandb
-        
-      - name: Create Python script
-        run: |
-          cat > wandb_script.py << 'SCRIPT_EOF'
-          import os
-          import wandb
-          
-          entity = os.environ["WANDB_ENTITY"]
-          project = os.environ["WANDB_PROJECT"]
-          sha = os.environ["TARGET_SHA"]
-          
-          print(f"Target SHA: {sha}")
-          
-          api = wandb.Api()
-          runs = api.runs(f"{entity}/{project}")
-          
-          print(f"Total runs fetched: {len(runs)}")
-          
-          for r in runs:
-              print(f"Run: {r.name}, Commit: {r.commit}")
-          
-          # Filter runs that match the target SHA
-          matched = [r for r in runs if r.commit == sha]
-          
-          print(f"Matched runs: {len(matched)}")
-          
-          with open("wandb_summary.md", "w") as f:
-              f.write(f"### 📊 WandB Run Summary for SHA `{sha}`\n\n")
-              
-              if not matched:
-                  f.write("❌ No matching runs found for this commit.\n\n")
-                  f.write("**Available runs:**\n")
-                  for run in runs[:5]:  # Show first 5 runs
-                      f.write(f"- [{run.name}]({run.url}) (Commit: `{run.commit}`)\n")
-              else:
-                  f.write(f"✅ Found {len(matched)} matching run(s):\n\n")
-                  for run in matched:
-                      f.write(f"#### 🔬 [{run.name}]({run.url})\n")
-                      f.write(f"- **Commit:** `{run.commit}`\n")
-                      f.write(f"- **Status:** {run.state}\n")
-                      f.write(f"- **Created:** {run.created_at}\n")
-                      
-                      # Display key metrics
-                      metrics = ["accuracy", "loss", "best_val_acc", "best_val_loss", "val_accuracy", "val_loss", "_runtime"]
-                      f.write("- **Metrics:**\n")
-                      
-                      has_metrics = False
-                      for metric in metrics:
-                          value = run.summary.get(metric)
-                          if value is not None:
-                              has_metrics = True
-                              if isinstance(value, float):
-                                  f.write(f"  - {metric}: `{value:.4f}`\n")
-                              else:
-                                  f.write(f"  - {metric}: `{value}`\n")
-                      
-                      if not has_metrics:
-                          f.write("  - No metrics available\n")
-                      
-                      f.write("\n")
-          
-          print("Markdown file generated successfully")
-          SCRIPT_EOF
-          
-      - name: Fetch W&B Runs and generate markdown
+       
+      - name: Fetch W&B Runs with enhanced matching
         env:
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
           WANDB_ENTITY: ${{ secrets.WANDB_ENTITY }}
           WANDB_PROJECT: ${{ secrets.WANDB_PROJECT }}
           TARGET_SHA: ${{ steps.chatops.outputs.SHA }}
-        run: python wandb_script.py
-        
-      - name: Debug - Show generated markdown
+          PR_NUMBER: ${{ github.event.issue.number }}
         run: |
-          echo "Generated markdown content:"
-          cat wandb_summary.md
+          python <<EOF
+          import os
+          import wandb
+          from datetime import datetime, timedelta
           
+          entity = os.environ["WANDB_ENTITY"]
+          project = os.environ["WANDB_PROJECT"]
+          target_sha = os.environ["TARGET_SHA"]
+          pr_number = os.environ["PR_NUMBER"]
+          
+          print(f"Target SHA: {target_sha}")
+          print(f"PR Number: {pr_number}")
+          
+          api = wandb.Api()
+          
+          # Get recent runs (last 30 days) to avoid fetching too many
+          runs = api.runs(f"{entity}/{project}", 
+                         filters={"created_at": {"$gt": (datetime.now() - timedelta(days=30)).isoformat()}})
+          
+          print(f"Total recent runs fetched: {len(runs)}")
+          
+          # Debug: Show all runs with their commits
+          for r in runs:
+              commit = getattr(r, 'commit', None) or 'No commit'
+              print(f"Run: {r.name}, Commit: {commit}, Created: {r.created_at}")
+          
+          # Strategy 1: Exact SHA match
+          exact_matches = [r for r in runs if getattr(r, 'commit', None) == target_sha]
+          
+          # Strategy 2: Partial SHA match (first 7 characters)
+          partial_matches = [r for r in runs if getattr(r, 'commit', None) and 
+                           getattr(r, 'commit', '')[:7] == target_sha[:7]]
+          
+          # Strategy 3: Look for runs with PR-related tags or names
+          pr_matches = [r for r in runs if f"pr-{pr_number}" in r.name.lower() or 
+                       f"pull-{pr_number}" in r.name.lower() or
+                       (hasattr(r, 'tags') and any(f"pr-{pr_number}" in str(tag).lower() for tag in (r.tags or [])))]
+          
+          # Strategy 4: Recent runs (last 24 hours) if no exact matches
+          recent_cutoff = datetime.now() - timedelta(hours=24)
+          recent_matches = [r for r in runs if r.created_at and 
+                          datetime.fromisoformat(r.created_at.replace('Z', '+00:00')) > recent_cutoff]
+          
+          with open("wandb_summary.md", "w") as f:
+              f.write(f"### 📊 WandB Run Summary for SHA `{target_sha[:8]}`\n\n")
+              
+              if exact_matches:
+                  f.write("#### ✅ Exact SHA Matches:\n")
+                  for run in exact_matches:
+                      write_run_details(f, run)
+              elif partial_matches:
+                  f.write("#### 🔍 Partial SHA Matches (first 7 chars):\n")
+                  for run in partial_matches:
+                      write_run_details(f, run)
+              elif pr_matches:
+                  f.write(f"#### 🔗 PR-{pr_number} Related Runs:\n")
+                  for run in pr_matches:
+                      write_run_details(f, run)
+              elif recent_matches:
+                  f.write("#### ⏰ Recent Runs (last 24 hours):\n")
+                  f.write("*No exact SHA match found, showing recent runs instead*\n\n")
+                  for run in recent_matches[:5]:  # Limit to 5 most recent
+                      write_run_details(f, run)
+              else:
+                  f.write("❌ No matching runs found.\n\n")
+                  f.write("**Debugging Info:**\n")
+                  f.write(f"- Target SHA: `{target_sha}`\n")
+                  f.write(f"- Total runs checked: {len(runs)}\n")
+                  if runs:
+                      f.write("- Sample commits from recent runs:\n")
+                      for run in runs[:3]:
+                          commit = getattr(run, 'commit', 'No commit')
+                          f.write(f"  - `{commit}` ({run.name})\n")
+          
+          def write_run_details(f, run):
+              commit_short = getattr(run, 'commit', 'N/A')[:8] if getattr(run, 'commit', None) else 'N/A'
+              f.write(f"- **[{run.name}]({run.url})** (commit: `{commit_short}`)\n")
+              
+              # Key metrics to display
+              metrics = ["accuracy", "loss", "best_val_acc", "best_val_loss", "val_accuracy", "test_accuracy", "_runtime"]
+              displayed_metrics = []
+              
+              for k in metrics:
+                  v = run.summary.get(k)
+                  if v is not None:
+                      if isinstance(v, float):
+                          displayed_metrics.append(f"{k}: `{v:.4f}`")
+                      else:
+                          displayed_metrics.append(f"{k}: `{v}`")
+              
+              if displayed_metrics:
+                  f.write(f"  - {' | '.join(displayed_metrics)}\n")
+              else:
+                  f.write(f"  - No key metrics found\n")
+              
+              f.write(f"  - Created: {run.created_at}\n\n")
+          EOF
+       
       - name: Install GitHub CLI
         run: |
           sudo apt update
           sudo apt install gh -y
-          
+       
       - name: Comment to PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
