@@ -1,264 +1,338 @@
 name: Get WandB Runs
 on:
   issue_comment:
-    types: [created] # Ensure this is the desired event type
 
 jobs:
   get-runs:
     if: github.event.issue.pull_request != null && contains(github.event.comment.body, '/wandb_list_model')
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4 # Updated to v4
+      - name: Checkout
+        uses: actions/checkout@v3
         
-      - name: Get SHA from PR comment for context
+      - name: Get PR info from comment
         id: chatops
-        uses: machine-learning-apps/actions-chatops@master # Consider checking for newer versions or alternatives if issues arise
+        uses: machine-learning-apps/actions-chatops@master
         with:
-          TRIGGER_PHRASE: "/wandb_list_model" # Command to trigger the action
+          TRIGGER_PHRASE: "/wandb_list_model"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           
       - name: Setup Python
-        uses: actions/setup-python@v5 # Updated to v5
+        uses: actions/setup-python@v4
         with:
           python-version: '3.9'
           
       - name: Install wandb
         run: pip install wandb
         
-      - name: Create Python script for WandB reporting
+      - name: Create Python script
         run: |
           cat > wandb_script.py << 'SCRIPT_EOF'
           import os
           import wandb
           from datetime import datetime, timedelta
           
-          # Fetch environment variables
-          entity = os.environ.get("WANDB_ENTITY")
-          project = os.environ.get("WANDB_PROJECT")
-          # TARGET_SHA is used for context in the report, not for filtering runs
-          sha = os.environ.get("TARGET_SHA", "N/A") 
+          entity = os.environ["WANDB_ENTITY"]
+          project = os.environ["WANDB_PROJECT"]
           
-          if not entity or not project:
-              print("Error: WANDB_ENTITY and WANDB_PROJECT environment variables must be set.")
-              # Create a minimal markdown indicating the error
-              with open("wandb_summary.md", "w") as f:
-                  f.write(f"# 🤖 ML Experiment Dashboard Error\n\n")
-                  f.write("❌ **Configuration Error:** `WANDB_ENTITY` and/or `WANDB_PROJECT` are not set in GitHub secrets.\n")
-              exit(0) # Exit gracefully so error report can be commented
-
-          print(f"W&B Target: {entity}/{project}")
-          print(f"Contextual Commit SHA: {sha}")
+          api = wandb.Api()
           
-          api = wandb.Api(timeout=60) # Increased timeout for API calls
+          # Fetch recent runs (last 7 days to avoid too many API calls)
+          cutoff_date = datetime.now() - timedelta(days=7)
+          runs = api.runs(f"{entity}/{project}", 
+                         filters={"created_at": {"$gte": cutoff_date.isoformat()}})
           
-          # Fetch recent runs (e.g., last 7 days to manage scope)
-          # W&B API filters by ISO format date string
-          cutoff_date = datetime.utcnow() - timedelta(days=7) # Use UTCNow for consistency
+          print(f"Total runs fetched: {len(runs)}")
           
-          runs = []
-          try:
-              runs = api.runs(
-                  path=f"{entity}/{project}", 
-                  filters={"created_at": {"$gte": cutoff_date.isoformat()}},
-                  order="-created_at" # Get newest runs first
-              )
-              print(f"Total runs fetched from the last 7 days: {len(runs)}")
-          except Exception as e:
-              print(f"Error fetching runs from W&B: {e}")
-              with open("wandb_summary.md", "w") as f:
-                  f.write(f"# 🤖 ML Experiment Dashboard Error\n\n")
-                  f.write(f"❌ **W&B API Error:** Failed to fetch runs for `{entity}/{project}`.\n")
-                  f.write(f"   Error details: `{str(e)}`\n")
-              exit(0) # Exit gracefully
-
-          # Helper functions for formatting the report
-          def get_performance_emoji(accuracy_value):
-              if accuracy_value is None: return "❓"
-              if accuracy_value >= 0.95: return "🏆"
-              if accuracy_value >= 0.90: return "🥇"
-              if accuracy_value >= 0.85: return "🥈"
-              if accuracy_value >= 0.80: return "🥉"
-              if accuracy_value >= 0.70: return "👍"
-              return "⚠️"
-
-          def format_runtime(seconds):
-              if seconds is None: return "N/A"
-              if not isinstance(seconds, (int, float)) or seconds < 0: return "Invalid"
-              if seconds < 60: return f"{seconds:.1f}s"
-              if seconds < 3600: return f"{seconds/60:.1f}m"
-              return f"{seconds/3600:.1f}h"
-
-          def get_experiment_insights(run_obj):
-              # Safely get metrics, preferring validation metrics
-              accuracy = run_obj.summary.get('best_val_acc') or run_obj.summary.get('val_accuracy') or run_obj.summary.get('accuracy')
-              loss = run_obj.summary.get('best_val_loss') or run_obj.summary.get('val_loss') or run_obj.summary.get('loss')
-              train_acc = run_obj.summary.get('train_accuracy')
-              val_acc = run_obj.summary.get('val_accuracy') # Re-fetch for clarity if used directly
-              runtime = run_obj.summary.get('_runtime')
+          # Display all runs with their run IDs and basic info
+          for r in runs:
+              print(f"Run ID: {r.id}, Name: {r.name}, State: {r.state}, Created: {r.created_at}")
+          
+          def get_performance_emoji(accuracy):
+              """Get emoji based on accuracy performance"""
+              if accuracy is None:
+                  return "❓"
+              if accuracy >= 0.95:
+                  return "🏆"
+              elif accuracy >= 0.90:
+                  return "🥇"
+              elif accuracy >= 0.85:
+                  return "🥈"
+              elif accuracy >= 0.80:
+                  return "🥉"
+              elif accuracy >= 0.70:
+                  return "👍"
+              else:
+                  return "⚠️"
+          
+          def format_runtime(runtime_seconds):
+              """Format runtime in a readable way"""
+              if runtime_seconds is None:
+                  return "N/A"
+              if runtime_seconds < 60:
+                  return f"{runtime_seconds:.1f}s"
+              elif runtime_seconds < 3600:
+                  return f"{runtime_seconds/60:.1f}m"
+              else:
+                  return f"{runtime_seconds/3600:.1f}h"
+          
+          def get_experiment_insights(run):
+              """Generate experiment insights and comments for each model"""
+              accuracy = run.summary.get('accuracy') or run.summary.get('best_val_acc') or run.summary.get('val_accuracy')
+              loss = run.summary.get('loss') or run.summary.get('best_val_loss') or run.summary.get('val_loss')
+              train_acc = run.summary.get('train_accuracy')
+              val_acc = run.summary.get('val_accuracy')
+              runtime = run.summary.get('_runtime')
               
-              insights_list = []
+              insights = []
               
-              if accuracy is not None:
-                  if accuracy >= 0.95: insights_list.append("🔥 **Excellent performance** - Model is performing exceptionally well.")
-                  elif accuracy >= 0.90: insights_list.append("✨ **Strong performance** - Model shows great results.")
-                  elif accuracy >= 0.80: insights_list.append("👍 **Good performance** - Solid baseline results.")
-                  elif accuracy >= 0.70: insights_list.append("⚡ **Moderate performance** - Room for improvement.")
-                  else: insights_list.append("⚠️ **Low performance** - Consider tuning or architecture changes.")
+              # Performance analysis
+              if accuracy:
+                  if accuracy >= 0.95:
+                      insights.append("🔥 **Excellent performance** - Model is performing exceptionally well")
+                  elif accuracy >= 0.90:
+                      insights.append("✨ **Strong performance** - Model shows great results")
+                  elif accuracy >= 0.80:
+                      insights.append("👍 **Good performance** - Solid baseline results")
+                  elif accuracy >= 0.70:
+                      insights.append("⚡ **Moderate performance** - Room for improvement")
+                  else:
+                      insights.append("⚠️ **Low performance** - Consider hyperparameter tuning or model architecture changes")
               
-              if train_acc is not None and val_acc is not None:
+              # Overfitting analysis
+              if train_acc and val_acc:
                   gap = abs(train_acc - val_acc)
-                  if gap > 0.15: insights_list.append(f"🚨 **Potential overfitting** - Train/Val accuracy gap: {gap:.2f} ({train_acc:.3f} vs {val_acc:.3f}).")
-                  elif gap > 0.05: insights_list.append(f"⚠️ **Slight overfitting** - Train/Val accuracy gap: {gap:.2f} ({train_acc:.3f} vs {val_acc:.3f}).")
-                  else: insights_list.append(f"✅ **Well-generalized** - Train/Val accuracy are close.")
-
-              if runtime is not None:
-                  if runtime < 300: insights_list.append(f"⚡ **Fast training:** {format_runtime(runtime)}.")
-                  elif runtime < 1800: insights_list.append(f"⏱️ **Moderate training time:** {format_runtime(runtime)}.")
-                  else: insights_list.append(f"🐌 **Long training time:** {format_runtime(runtime)}.")
+                  if gap > 0.1:
+                      insights.append(f"🚨 **Potential overfitting detected** - Training accuracy ({train_acc:.3f}) significantly higher than validation ({val_acc:.3f})")
+                  elif gap > 0.05:
+                      insights.append(f"⚠️ **Slight overfitting** - Small gap between training ({train_acc:.3f}) and validation ({val_acc:.3f}) accuracy")
+                  else:
+                      insights.append(f"✅ **Well-generalized model** - Training and validation accuracy are well-balanced")
               
-              # Model type hints based on name (case-insensitive)
-              run_name_lower = run_obj.name.lower()
-              if 'lstm' in run_name_lower or 'rnn' in run_name_lower: insights_list.append("🔄 **Sequential model hint** (LSTM/RNN).")
-              elif 'cnn' in run_name_lower or 'conv' in run_name_lower: insights_list.append("🖼️ **Convolutional model hint** (CNN).")
-              elif 'transformer' in run_name_lower or 'bert' in run_name_lower: insights_list.append("🤖 **Transformer model hint**.")
-              elif 'xgboost' in run_name_lower: insights_list.append("🌳 **Gradient Boosting hint** (XGBoost).")
-              elif 'random_forest' in run_name_lower or 'randomforest' in run_name_lower : insights_list.append("🌲 **Random Forest hint**.")
+              # Runtime analysis
+              if runtime:
+                  if runtime < 300:  # 5 minutes
+                      insights.append(f"⚡ **Fast training** - Completed in {format_runtime(runtime)}")
+                  elif runtime < 1800:  # 30 minutes
+                      insights.append(f"⏱️ **Moderate training time** - Completed in {format_runtime(runtime)}")
+                  else:
+                      insights.append(f"🐌 **Long training time** - Took {format_runtime(runtime)} to complete")
               
-              return insights_list if insights_list else ["No specific insights generated."]
-
+              # Model-specific insights based on name
+              model_name = run.name.lower()
+              if 'lstm' in model_name or 'rnn' in model_name:
+                  insights.append("🔄 **Sequential model** - Good for time-series or sequence data")
+              elif 'cnn' in model_name or 'conv' in model_name:
+                  insights.append("🖼️ **Convolutional model** - Optimized for image/spatial data")
+              elif 'transformer' in model_name or 'bert' in model_name:
+                  insights.append("🤖 **Transformer architecture** - State-of-the-art for NLP tasks")
+              elif 'xgboost' in model_name:
+                  insights.append("🌳 **Gradient boosting** - Excellent for tabular data")
+              elif 'random' in model_name and 'forest' in model_name:
+                  insights.append("🌲 **Ensemble method** - Robust and interpretable")
+              elif 'svm' in model_name:
+                  insights.append("📐 **Support Vector Machine** - Good for high-dimensional data")
+              
+              return insights
+          
           def generate_report():
+              """Generate the WandB runs report"""
               with open("wandb_summary.md", "w") as f:
-                  f.write(f"# 🤖 ML Experiment Dashboard for `{project}`\n")
-                  context_sha_info = f"`{sha[:8]}`" if sha != "N/A" else "Not Available"
-                  f.write(f"**Contextual Commit:** {context_sha_info} | **Fetched Runs (Last 7 Days):** {len(runs)}\n\n")
+                  f.write(f"# 🤖 ML Experiment Dashboard\n")
+                  f.write(f"**Total Recent Runs:** {len(runs)} | **Time Range:** Last 7 days\n\n")
                   
                   if not runs:
-                      f.write("❌ No recent runs found in the last 7 days for this project.\n")
-                      f.write("\n---\n*Generated by WandB GitHub Action* 🤖")
+                      f.write("❌ No recent runs found in the last 7 days.\n\n")
+                      f.write("---\n*Generated by WandB GitHub Action* 🤖")
                       return
                   
-                  # Overall stats
+                  # Performance summary
+                  best_accuracy = 0
+                  best_model = None
+                  best_run_id = None
+                  total_runtime = 0
                   finished_runs = [r for r in runs if r.state == "finished"]
-                  best_run = max(finished_runs, key=lambda r: r.summary.get('best_val_acc') or r.summary.get('val_accuracy') or r.summary.get('accuracy') or -1, default=None)
                   
-                  f.write("## 📊 Quick Stats (Last 7 Days)\n")
-                  if best_run and (best_run.summary.get('best_val_acc') or best_run.summary.get('val_accuracy') or best_run.summary.get('accuracy')) is not None:
-                      best_acc_val = best_run.summary.get('best_val_acc') or best_run.summary.get('val_accuracy') or best_run.summary.get('accuracy')
-                      f.write(f"🏆 **Top Model (by Accuracy):** [{best_run.name}]({best_run.url}) ({best_acc_val:.3f})\n")
-                  f.write(f"✅ **Completed Runs:** {len(finished_runs)} / {len(runs)}\n")
+                  for run in finished_runs:
+                      accuracy = run.summary.get('accuracy') or run.summary.get('best_val_acc') or run.summary.get('val_accuracy')
+                      runtime = run.summary.get('_runtime')
+                      
+                      if accuracy and accuracy > best_accuracy:
+                          best_accuracy = accuracy
+                          best_model = run.name
+                          best_run_id = run.id
+                      
+                      if runtime:
+                          total_runtime += runtime
+                  
+                  # Quick stats
+                  f.write("## 📊 Quick Stats\n\n")
+                  if best_model and best_accuracy > 0:
+                      f.write(f"🏆 **Champion Model:** [{best_model}](https://wandb.ai/{entity}/{project}/runs/{best_run_id}) ({best_accuracy:.3f} accuracy)\n")
+                  f.write(f"⏱️ **Total Training Time:** {format_runtime(total_runtime)}\n")
+                  f.write(f"✅ **Completed Runs:** {len(finished_runs)}/{len(runs)}\n")
                   f.write(f"🔄 **Active Runs:** {len([r for r in runs if r.state == 'running'])}\n\n")
                   
-                  # Leaderboard
-                  f.write("## 🏁 Model Performance Leaderboard (Last 7 Days, Sorted by Accuracy)\n")
-                  f.write("| Rank | Model | Run ID | Perf. | Accuracy | Loss | Runtime | Status |\n")
-                  f.write("|------|-------|--------|-------|----------|------|---------|--------|\n")
+                  # Create performance comparison table
+                  f.write("## 🏁 Model Performance Leaderboard\n\n")
+                  f.write("| Rank | Model | Run ID | Performance | Accuracy | Loss | Runtime | Status |\n")
+                  f.write("|------|-------|--------|-------------|----------|------|---------|--------|\n")
                   
-                  # Sort runs by a primary accuracy metric, then by creation date as a fallback.
-                  # Handle cases where metrics might be missing.
-                  def sort_key(run_obj):
-                      acc = run_obj.summary.get('best_val_acc') or run_obj.summary.get('val_accuracy') or run_obj.summary.get('accuracy')
-                      return (acc is not None, acc, run_obj.created_at)
-
-                  sorted_for_leaderboard = sorted(runs, key=sort_key, reverse=True)
-
-                  for idx, run_item in enumerate(sorted_for_leaderboard, 1):
-                      acc = run_item.summary.get('best_val_acc') or run_item.summary.get('val_accuracy') or run_item.summary.get('accuracy')
-                      loss = run_item.summary.get('best_val_loss') or run_item.summary.get('val_loss') or run_item.summary.get('loss')
-                      rt = run_item.summary.get('_runtime')
+                  # Sort runs by accuracy for leaderboard
+                  sorted_runs = sorted(runs, key=lambda x: (
+                      x.summary.get('accuracy') or x.summary.get('best_val_acc') or x.summary.get('val_accuracy') or 0
+                  ), reverse=True)
+                  
+                  for idx, run in enumerate(sorted_runs, 1):
+                      # Get key metrics
+                      accuracy = run.summary.get('accuracy') or run.summary.get('best_val_acc') or run.summary.get('val_accuracy')
+                      loss = run.summary.get('loss') or run.summary.get('best_val_loss') or run.summary.get('val_loss')
+                      runtime = run.summary.get('_runtime')
                       
-                      rank_str = f"{idx}"
-                      if idx == 1: rank_str = "🥇"
-                      elif idx == 2: rank_str = "🥈"
-                      elif idx == 3: rank_str = "🥉"
-
-                      emoji = get_performance_emoji(acc)
-                      acc_s = f"{acc:.3f}" if acc is not None else "N/A"
-                      loss_s = f"{loss:.4f}" if loss is not None else "N/A"
-                      rt_s = format_runtime(rt)
-                      status_s = "✅ Fin" if run_item.state == "finished" else ("🔄 Run" if run_item.state == "running" else f"⚠️ {run_item.state.capitalize()}")
+                      # Format values
+                      perf_emoji = get_performance_emoji(accuracy)
+                      acc_str = f"{accuracy:.3f}" if accuracy is not None else "N/A"
+                      loss_str = f"{loss:.4f}" if loss is not None else "N/A"
+                      runtime_str = format_runtime(runtime)
                       
-                      f.write(f"| {rank_str} | **[{run_item.name}]({run_item.url})** | `{run_item.id[:8]}` | {emoji} | {acc_s} | {loss_s} | {rt_s} | {status_s} |\n")
-                  f.write(f"\nPerformance Legend: 🏆≥95% | 🥇≥90% | �≥85% | 🥉≥80% | 👍≥70% | ⚠️<70% | ❓Unknown\n\n")
-
-                  # Detailed Analysis for each run
-                  f.write(f"## 🔬 Detailed Experiment Analysis (Newest First)\n")
-                  # Runs are already sorted newest first from the API query (order="-created_at")
-                  for run_item in runs: # Iterate in fetched order (newest first)
-                      acc = run_item.summary.get('best_val_acc') or run_item.summary.get('val_accuracy') or run_item.summary.get('accuracy')
+                      # Status emoji
+                      status_emoji = "✅" if run.state == "finished" else "🔄" if run.state == "running" else "❌"
                       
-                      f.write(f"\n---\n### {get_performance_emoji(acc)} {run_item.name}\n")
-                      f.write(f"**Run ID:** `{run_item.id}` | **Status:** {run_item.state} | **Created:** {run_item.created_at}\n")
+                      # Rank emoji
+                      rank_emoji = "🥇" if idx == 1 else "🥈" if idx == 2 else "🥉" if idx == 3 else f"{idx}"
                       
-                      insights = get_experiment_insights(run_item)
-                      f.write("**Insights:**\n")
-                      for insight_text in insights: f.write(f"- {insight_text}\n")
+                      f.write(f"| {rank_emoji} | **{run.name}** | `{run.id[:8]}` | {perf_emoji} | {acc_str} | {loss_str} | {runtime_str} | {status_emoji} |\n")
+                  
+                  f.write(f"\n📈 **Performance Legend:** 🏆 95%+ | 🥇 90%+ | 🥈 85%+ | 🥉 80%+ | 👍 70%+ | ⚠️ <70%\n\n")
+                  
+                  # Detailed experiment analysis for each run
+                  f.write(f"## 🔬 Detailed Experiment Analysis\n\n")
+                  
+                  for idx, run in enumerate(sorted_runs, 1):
+                      accuracy = run.summary.get('accuracy') or run.summary.get('best_val_acc') or run.summary.get('val_accuracy')
                       
-                      f.write("\n**Key Metrics:**\n")
-                      core_metrics_display = {
-                          "Accuracy (Val/Best)": acc,
-                          "Loss (Val/Best)": run_item.summary.get('best_val_loss') or run_item.summary.get('val_loss') or run_item.summary.get('loss'),
-                          "Train Accuracy": run_item.summary.get('train_accuracy'),
-                          "Train Loss": run_item.summary.get('train_loss'),
-                          "Runtime": run_item.summary.get('_runtime'),
-                          "Epochs": run_item.summary.get('epoch') or run_item.summary.get('epochs'),
+                      f.write(f"### {get_performance_emoji(accuracy)} {run.name}\n")
+                      f.write(f"**Run ID:** `{run.id}` | **Status:** {run.state} | **Created:** {run.created_at}\n\n")
+                      
+                      # Experiment insights
+                      insights = get_experiment_insights(run)
+                      if insights:
+                          f.write("**🔍 Experiment Insights:**\n")
+                          for insight in insights:
+                              f.write(f"- {insight}\n")
+                          f.write("\n")
+                      
+                      # Core metrics
+                      f.write("**📊 Key Metrics:**\n")
+                      core_metrics = {
+                          "Final Accuracy": run.summary.get('accuracy') or run.summary.get('best_val_acc') or run.summary.get('val_accuracy'),
+                          "Final Loss": run.summary.get('loss') or run.summary.get('best_val_loss') or run.summary.get('val_loss'),
+                          "Training Accuracy": run.summary.get('train_accuracy'),
+                          "Validation Accuracy": run.summary.get('val_accuracy'),
+                          "Training Loss": run.summary.get('train_loss'),
+                          "Validation Loss": run.summary.get('val_loss'),
+                          "Test Accuracy": run.summary.get('test_accuracy'),
+                          "Test Loss": run.summary.get('test_loss'),
+                          "Training Time": run.summary.get('_runtime'),
+                          "Epochs": run.summary.get('epoch') or run.summary.get('epochs'),
+                          "Learning Rate": run.summary.get('learning_rate') or run.summary.get('lr'),
+                          "Batch Size": run.summary.get('batch_size')
                       }
-                      metrics_found_count = 0
-                      for name, val in core_metrics_display.items():
-                          if val is not None:
-                              metrics_found_count += 1
-                              if name == "Runtime": f.write(f"- **{name}:** {format_runtime(val)}\n")
-                              elif isinstance(val, float): f.write(f"- **{name}:** {val:.4f}\n")
-                              else: f.write(f"- **{name}:** {val}\n")
-                      if not metrics_found_count: f.write("- *No standard metrics logged or available in summary.*\n")
-
-                      config_data = run_item.config
-                      if config_data:
-                          f.write(f"\n**Configuration Highlights:**\n")
-                          # Display a few important config keys if they exist
-                          important_config_keys = ['model_type', 'optimizer', 'learning_rate', 'batch_size', 'epochs', 'dropout_rate']
-                          config_found_count = 0
-                          for key in important_config_keys:
-                              if key in config_data:
-                                  config_found_count +=1
-                                  f.write(f"- **{key.replace('_', ' ').title()}:** `{config_data[key]}`\n")
-                          if not config_found_count: f.write("- *No highlighted config parameters found.*\n")
                       
-                      f.write(f"\n**Links:** [📊 Full Run Page]({run_item.url}) | [📈 Charts]({run_item.url}?workspace=user-{entity}) | [📋 Logs]({run_item.url}/logs)\n")
-
-                  f.write("\n---\n")
-                  f.write(f"*Report generated by WandB GitHub Action at {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S %Z')} UTC* 🤖\n")
-                  f.write(f"*View all project runs: [W&B Dashboard](https://wandb.ai/{entity}/{project})*")
-
+                      metrics_found = False
+                      for metric_name, value in core_metrics.items():
+                          if value is not None:
+                              metrics_found = True
+                              if metric_name == "Training Time":
+                                  f.write(f"- **{metric_name}:** {format_runtime(value)}\n")
+                              elif isinstance(value, float) and metric_name not in ["Epochs", "Batch Size"]:
+                                  f.write(f"- **{metric_name}:** {value:.4f}\n")
+                              else:
+                                  f.write(f"- **{metric_name}:** {value}\n")
+                      
+                      if not metrics_found:
+                          f.write("- *No detailed metrics available*\n")
+                      
+                      # Configuration details
+                      config = run.config
+                      if config:
+                          f.write(f"\n**⚙️ Configuration:**\n")
+                          important_configs = ['model_type', 'architecture', 'optimizer', 'learning_rate', 'batch_size', 'epochs', 'dropout', 'hidden_size']
+                          for key in important_configs:
+                              if key in config:
+                                  f.write(f"- **{key.replace('_', ' ').title()}:** {config[key]}\n")
+                      
+                      # Quick actions
+                      f.write(f"\n**🔗 Quick Actions:**\n")
+                      f.write(f"- [📊 View Full Run](https://wandb.ai/{entity}/{project}/runs/{run.id})\n")
+                      f.write(f"- [📈 View Charts](https://wandb.ai/{entity}/{project}/runs/{run.id}?workspace=user-{entity})\n")
+                      f.write(f"- [📋 View Logs](https://wandb.ai/{entity}/{project}/runs/{run.id}/logs)\n")
+                      
+                      # Recommendations
+                      if accuracy is not None:
+                          f.write(f"\n**💡 Recommendations:**\n")
+                          if accuracy < 0.7:
+                              f.write("- Consider increasing model complexity or training time\n")
+                              f.write("- Try different hyperparameters (learning rate, batch size)\n")
+                              f.write("- Check data quality and preprocessing steps\n")
+                          elif accuracy < 0.85:
+                              f.write("- Fine-tune hyperparameters for better performance\n")
+                              f.write("- Consider data augmentation techniques\n")
+                              f.write("- Try ensemble methods\n")
+                          else:
+                              f.write("- Great performance! Consider model deployment\n")
+                              f.write("- Document successful hyperparameters for future experiments\n")
+                      
+                      f.write("\n---\n\n")
+                  
+                  # Summary and next steps
+                  f.write(f"## 🎯 Summary & Next Steps\n\n")
+                  if best_model:
+                      f.write(f"🏆 **Best performing model:** {best_model} with {best_accuracy:.3f} accuracy\n\n")
+                  
+                  running_count = len([r for r in runs if r.state == 'running'])
+                  if running_count > 0:
+                      f.write(f"⏳ **{running_count} experiments still running** - Check back later for complete results\n\n")
+                  
+                  failed_count = len([r for r in runs if r.state == 'failed'])
+                  if failed_count > 0:
+                      f.write(f"❌ **{failed_count} experiments failed** - Review logs for debugging\n\n")
+                  
+                  f.write("**Suggested Next Steps:**\n")
+                  f.write("- Compare successful configurations to identify patterns\n")
+                  f.write("- Consider hyperparameter optimization for top-performing models\n")
+                  f.write("- Plan production deployment for best model\n")
+                  f.write("- Document findings and learnings\n\n")
+                  
+                  f.write("---\n")
+                  f.write(f"*Generated by WandB GitHub Action at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC* 🤖\n")
+                  f.write(f"*View all runs: [WandB Dashboard](https://wandb.ai/{entity}/{project})*")
+          
+          # Generate the report
           generate_report()
-          print("Enhanced WandB markdown report generated: wandb_summary.md")
+          print("Enhanced markdown file generated successfully")
           SCRIPT_EOF
           
-      - name: Execute Python script for W&B report
+      - name: Fetch W&B Runs and generate enhanced report
         env:
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
-          WANDB_ENTITY: ${{ secrets.WANDB_ENTITY }} # Your W&B username or team name
-          WANDB_PROJECT: ${{ secrets.WANDB_PROJECT }} # Your W&B project name
-          TARGET_SHA: ${{ steps.chatops.outputs.SHA }} # SHA from PR comment for context
+          WANDB_ENTITY: ${{ secrets.WANDB_ENTITY }}
+          WANDB_PROJECT: ${{ secrets.WANDB_PROJECT }}
         run: python wandb_script.py
         
-      - name: Debug - Display generated markdown content
-        if: always() # Run this step even if previous steps fail, for debugging
+      - name: Debug - Show generated markdown
         run: |
-          echo "--- Generated Markdown Content (wandb_summary.md) ---"
+          echo "Generated markdown content:"
           cat wandb_summary.md
-          echo "--- End of Markdown Content ---"
           
       - name: Install GitHub CLI
         run: |
-          sudo apt-get update -y && sudo apt-get install -y gh
+          sudo apt update
+          sudo apt install gh -y
           
-      - name: Comment to PR with WandB Summary
+      - name: Comment to PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.issue.number }}
         run: |
-          echo "Attempting to comment on PR #$PR_NUMBER"
-          gh pr comment $PR_NUMBER --body-file wandb_summary.md
-          echo "Successfully commented on PR #$PR_NUMBER."
+          gh pr comment ${{ github.event.issue.number }} --body-file wandb_summary.md
