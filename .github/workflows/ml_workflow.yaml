@@ -6,11 +6,10 @@ jobs:
   get-runs:
     if: github.event.issue.pull_request != null && contains(github.event.comment.body, '/wandb_list_model')
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v3
-
+        
       - name: Get SHA from PR comment
         id: chatops
         uses: machine-learning-apps/actions-chatops@master
@@ -18,58 +17,96 @@ jobs:
           TRIGGER_PHRASE: "/wandb_list_model"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
+          
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.9'
-
+          
       - name: Install wandb
         run: pip install wandb
-
-      - name: Fetch W&B Runs and generate markdown with debug info
+        
+      - name: Create Python script
+        run: |
+          cat > wandb_script.py << 'SCRIPT_EOF'
+          import os
+          import wandb
+          
+          entity = os.environ["WANDB_ENTITY"]
+          project = os.environ["WANDB_PROJECT"]
+          sha = os.environ["TARGET_SHA"]
+          
+          print(f"Target SHA: {sha}")
+          
+          api = wandb.Api()
+          runs = api.runs(f"{entity}/{project}")
+          
+          print(f"Total runs fetched: {len(runs)}")
+          
+          for r in runs:
+              print(f"Run: {r.name}, Commit: {r.commit}")
+          
+          # Filter runs that match the target SHA
+          matched = [r for r in runs if r.commit == sha]
+          
+          print(f"Matched runs: {len(matched)}")
+          
+          with open("wandb_summary.md", "w") as f:
+              f.write(f"### 📊 WandB Run Summary for SHA `{sha}`\n\n")
+              
+              if not matched:
+                  f.write("❌ No matching runs found for this commit.\n\n")
+                  f.write("**Available runs:**\n")
+                  for run in runs[:5]:  # Show first 5 runs
+                      f.write(f"- [{run.name}]({run.url}) (Commit: `{run.commit}`)\n")
+              else:
+                  f.write(f"✅ Found {len(matched)} matching run(s):\n\n")
+                  for run in matched:
+                      f.write(f"#### 🔬 [{run.name}]({run.url})\n")
+                      f.write(f"- **Commit:** `{run.commit}`\n")
+                      f.write(f"- **Status:** {run.state}\n")
+                      f.write(f"- **Created:** {run.created_at}\n")
+                      
+                      # Display key metrics
+                      metrics = ["accuracy", "loss", "best_val_acc", "best_val_loss", "val_accuracy", "val_loss", "_runtime"]
+                      f.write("- **Metrics:**\n")
+                      
+                      has_metrics = False
+                      for metric in metrics:
+                          value = run.summary.get(metric)
+                          if value is not None:
+                              has_metrics = True
+                              if isinstance(value, float):
+                                  f.write(f"  - {metric}: `{value:.4f}`\n")
+                              else:
+                                  f.write(f"  - {metric}: `{value}`\n")
+                      
+                      if not has_metrics:
+                          f.write("  - No metrics available\n")
+                      
+                      f.write("\n")
+          
+          print("Markdown file generated successfully")
+          SCRIPT_EOF
+          
+      - name: Fetch W&B Runs and generate markdown
         env:
           WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
           WANDB_ENTITY: ${{ secrets.WANDB_ENTITY }}
           WANDB_PROJECT: ${{ secrets.WANDB_PROJECT }}
           TARGET_SHA: ${{ steps.chatops.outputs.SHA }}
+        run: python wandb_script.py
+        
+      - name: Debug - Show generated markdown
         run: |
-          python <<EOF
-          import os
-          import wandb
-
-          entity = os.environ["WANDB_ENTITY"]
-          project = os.environ["WANDB_PROJECT"]
-          sha = os.environ["TARGET_SHA"]
-
-          print(f"Target SHA: {sha}")
-
-          api = wandb.Api()
-          runs = api.runs(f"{entity}/{project}")
-
-          print(f"Total runs fetched: {len(runs)}")
-          for r in runs:
-              print(f"Run: {r.name}, Commit: {r.commit}")
-
-          matched = [r for r in runs if r.commit == sha]
-
-          with open("wandb_summary.md", "w") as f:
-              f.write(f"### 📊 WandB Run Summary for SHA `{sha}`\n\n")
-              if not matched:
-                  f.write("No matching runs found.\n")
-              for run in matched:
-                  f.write(f"- [{run.name}]({run.url})\n")
-                  for k in ["accuracy", "loss", "best_val_acc", "best_val_loss", "_runtime"]:
-                      v = run.summary.get(k, "N/A")
-                      f.write(f"  - {k}: `{v}`\n")
-                  f.write("\n")
-          EOF
-
+          echo "Generated markdown content:"
+          cat wandb_summary.md
+          
       - name: Install GitHub CLI
         run: |
           sudo apt update
           sudo apt install gh -y
-
+          
       - name: Comment to PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
